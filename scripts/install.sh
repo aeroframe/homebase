@@ -1,130 +1,117 @@
 #!/usr/bin/env bash
 set -e
 
-###############################################################################
-# Homebase Beta Installer (Aeroframe)
-###############################################################################
-
 echo "======================================"
 echo " Homebase Beta Installer (Aeroframe)"
 echo "======================================"
+echo
 
-###############################################################################
-# Helpers
-###############################################################################
-step() {
+BASE_DIR="/opt/homebase"
+SRC_DIR="$BASE_DIR/src"
+D1090_DIR="$SRC_DIR/dump1090"
+D978_DIR="$SRC_DIR/dump978"
+
+STEP=0
+next() {
+  STEP=$((STEP+1))
   echo
-  echo "[$1] $2"
+  echo "[$STEP/11] $1"
 }
 
-###############################################################################
-# 0. DNS sanity check (non-destructive)
-###############################################################################
-step "0/11" "Ensure DNS resolution"
+# --------------------------------------------------
+next "System update"
+apt update
+apt -y upgrade || true
 
-if getent hosts deb.debian.org >/dev/null 2>&1; then
-  echo "DNS OK"
+# --------------------------------------------------
+next "Install build dependencies"
+apt install -y \
+  git curl ca-certificates rsync gnupg \
+  nginx php-fpm python3 python3-pip \
+  dnsmasq hostapd rfkill \
+  build-essential cmake pkg-config \
+  librtlsdr-dev libusb-1.0-0-dev \
+  libncurses-dev libboost-all-dev
+
+# --------------------------------------------------
+next "Prepare source directories"
+mkdir -p "$SRC_DIR"
+
+# --------------------------------------------------
+next "Build dump1090-fa from source"
+if [ ! -d "$D1090_DIR" ]; then
+  git clone https://github.com/flightaware/dump1090.git "$D1090_DIR"
+fi
+
+cd "$D1090_DIR"
+git fetch origin
+git reset --hard origin/master
+
+make clean || true
+make -j"$(nproc)"
+
+install -m 755 dump1090 /usr/local/bin/dump1090-fa
+install -m 755 view1090 /usr/local/bin/view1090-fa
+
+# --------------------------------------------------
+next "Build dump978-fa from source (NO SOAPY)"
+
+if [ ! -d "$D978_DIR" ]; then
+  git clone https://github.com/flightaware/dump978.git "$D978_DIR"
+fi
+
+cd "$D978_DIR"
+git fetch origin
+git reset --hard origin/master
+
+# ---- PATCH soapy_source.h safely ----
+PATCH_MARKER="AEROFAME_NO_SOAPY_PATCH"
+
+if ! grep -q "$PATCH_MARKER" soapy_source.h; then
+  echo "Applying NO_SOAPY patch to soapy_source.h"
+
+  sed -i '1i\
+#ifndef NO_SOAPY\
+#include <SoapySDR/Device.hpp>\
+#include <SoapySDR/Types.hpp>\
+#endif\
+/* AEROFAME_NO_SOAPY_PATCH */\
+' soapy_source.h
 else
-  echo "WARNING: DNS lookup failed"
+  echo "NO_SOAPY patch already applied"
 fi
 
-###############################################################################
-# 1. System update
-###############################################################################
-step "1/11" "System update"
-
-apt-get update
-apt-get -y upgrade || true
-
-###############################################################################
-# 2. Build dependencies
-###############################################################################
-step "2/11" "Install build dependencies"
-
-apt-get install -y \
-  git \
-  curl \
-  ca-certificates \
-  rsync \
-  gnupg \
-  nginx \
-  php-fpm \
-  python3 \
-  python3-pip \
-  dnsmasq \
-  hostapd \
-  rfkill \
-  build-essential \
-  cmake \
-  pkg-config \
-  librtlsdr-dev \
-  libusb-1.0-0-dev \
-  libncurses-dev \
-  libboost-all-dev
-
-###############################################################################
-# 3. dump1090 (FlightAware) — FROM SOURCE
-###############################################################################
-step "3/11" "Build dump1090 from source"
-
-if [[ ! -d /opt/dump1090 ]]; then
-  git clone https://github.com/flightaware/dump1090 /opt/dump1090
-fi
-
-cd /opt/dump1090
-git pull
 make clean || true
-make -j"$(nproc)"
+make -j"$(nproc)" NO_SOAPY=1
 
-install -m 755 dump1090 /usr/local/bin/dump1090
-install -m 755 view1090 /usr/local/bin/view1090
+install -m 755 dump978-fa /usr/local/bin/dump978-fa
 
-###############################################################################
-# 4. dump978 (FlightAware) — RTL-SDR ONLY, NO SOAPY
-###############################################################################
-step "4/11" "Build dump978 from source (RTL-SDR only, NO SOAPY)"
-
-if [[ ! -d /opt/dump978 ]]; then
-  git clone https://github.com/flightaware/dump978 /opt/dump978
-fi
-
-cd /opt/dump978
-git pull
-make clean || true
-
-# HARD disable SoapySDR (this is the critical fix)
-export CFLAGS="-DNO_SOAPY"
-export CXXFLAGS="-DNO_SOAPY"
-
-make -j"$(nproc)"
-
-install -m 755 dump978-fa /usr/local/bin/dump978
-
-###############################################################################
-# 5. Permissions sanity
-###############################################################################
-step "5/11" "Ensure SDR access"
-
-cat >/etc/udev/rules.d/20-rtl-sdr.rules <<'EOF'
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="plugdev", MODE="0666"
+# --------------------------------------------------
+next "Blacklist DVB kernel drivers (RTL-SDR)"
+cat >/etc/modprobe.d/rtl-sdr-blacklist.conf <<EOF
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
 EOF
 
+# --------------------------------------------------
+next "Reload udev rules"
 udevadm control --reload-rules
 udevadm trigger
 
-###############################################################################
-# 6. Summary
-###############################################################################
-step "11/11" "Installation complete"
+# --------------------------------------------------
+next "Install completed binaries"
+ls -lh /usr/local/bin/dump1090-fa /usr/local/bin/dump978-fa
 
+# --------------------------------------------------
+next "Done"
 echo
-echo "✔ dump1090 installed at: /usr/local/bin/dump1090"
-echo "✔ dump978 installed at: /usr/local/bin/dump978"
+echo "✅ Homebase install complete"
 echo
-echo "Test commands:"
-echo "  dump1090 --interactive"
-echo "  dump978 --help"
+echo "Next steps:"
+echo "  • Plug in RTL-SDR"
+echo "  • Test dump1090:"
+echo "      dump1090-fa --interactive"
+echo "  • Test dump978:"
+echo "      dump978-fa --ifile /dev/null"
 echo
-echo "NOTE: No systemd services installed yet."
