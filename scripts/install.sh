@@ -1,52 +1,65 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
 echo "======================================"
 echo " Homebase Beta Installer (Aeroframe)"
 echo "======================================"
 
-if [[ $EUID -ne 0 ]]; then
-  echo "ERROR: Run with sudo:"
-  echo "  sudo ./scripts/install.sh"
-  exit 1
-fi
+###############################################################################
+# Helpers
+###############################################################################
+step() {
+  echo
+  echo "[$1] $2"
+}
 
 ###############################################################################
-# 0. DNS sanity check (non-destructive)
+# 0. DNS check (non-destructive)
 ###############################################################################
-echo "[0/11] Ensure DNS resolution"
+step "0/11" "Ensure DNS resolution"
 if getent hosts github.com >/dev/null; then
   echo "DNS OK"
 else
-  echo "WARNING: DNS lookup failed"
+  echo "WARNING: DNS lookup failed for github.com"
 fi
 
 ###############################################################################
 # 1. System update
 ###############################################################################
-echo "[1/11] System update"
-apt-get update -y
-apt-get upgrade -y || true
+step "1/11" "System update"
+apt-get update
+apt-get -y upgrade || true
 
 ###############################################################################
-# 2. Install build + runtime dependencies
+# 2. Build + runtime dependencies
 ###############################################################################
-echo "[2/11] Install build dependencies"
+step "2/11" "Install build dependencies"
 
 apt-get install -y \
-  git curl ca-certificates rsync gnupg \
-  nginx php-fpm \
-  python3 python3-pip \
-  dnsmasq hostapd rfkill \
-  build-essential cmake pkg-config \
-  librtlsdr-dev libusb-1.0-0-dev \
+  git \
+  curl \
+  ca-certificates \
+  rsync \
+  gnupg \
+  nginx \
+  php-fpm \
+  python3 \
+  python3-pip \
+  dnsmasq \
+  hostapd \
+  rfkill \
+  build-essential \
+  cmake \
+  pkg-config \
+  librtlsdr-dev \
+  libusb-1.0-0-dev \
   libncurses-dev \
   libboost-all-dev
 
 ###############################################################################
-# 3. Build dump1090 (1090 MHz ADS-B)
+# 3. Build dump1090 (ADS-B / 1090 MHz)
 ###############################################################################
-echo "[3/11] Build dump1090 from source"
+step "3/11" "Build dump1090 from source"
 
 if [[ ! -d /opt/dump1090 ]]; then
   git clone https://github.com/flightaware/dump1090 /opt/dump1090
@@ -56,12 +69,14 @@ cd /opt/dump1090
 git pull
 make clean || true
 make -j"$(nproc)"
+
 install -m 755 dump1090 /usr/local/bin/dump1090
+install -m 755 view1090 /usr/local/bin/view1090
 
 ###############################################################################
-# 4. Build dump978 (978 MHz UAT) — RTL-SDR only
+# 4. Build dump978 (UAT / 978 MHz) — RTL-SDR ONLY
 ###############################################################################
-echo "[4/11] Build dump978 from source (RTL-SDR only)"
+step "4/11" "Build dump978 from source (RTL-SDR only)"
 
 if [[ ! -d /opt/dump978 ]]; then
   git clone https://github.com/flightaware/dump978 /opt/dump978
@@ -71,72 +86,49 @@ cd /opt/dump978
 git pull
 make clean || true
 
-# Force-disable SoapySDR (NOT needed for FlightAware Pro Stick)
-make -j"$(nproc)" RTLSDR=yes SOAPYSDR=no
+# dump978 REQUIRES config.mk to disable SoapySDR
+cat > config.mk <<'EOF'
+RTLSDR=yes
+SOAPYSDR=no
+EOF
+
+make -j"$(nproc)"
 
 install -m 755 dump978-fa /usr/local/bin/dump978
 
 ###############################################################################
-# 5. Create Homebase directories
+# 5. RTL-SDR permissions
 ###############################################################################
-echo "[5/11] Create Homebase directories"
+step "5/11" "Configure RTL-SDR permissions"
 
-mkdir -p /opt/homebase/{app,data,scripts,config}
-mkdir -p /var/www/Homebase
+cat > /etc/udev/rules.d/20-rtlsdr.rules <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0666"
+EOF
 
-chown -R root:root /opt/homebase
-chown -R www-data:www-data /var/www/Homebase
-
-###############################################################################
-# 6. Install Homebase web app
-###############################################################################
-echo "[6/11] Install Homebase web app"
-
-rsync -a --delete homebase-app/ /var/www/Homebase/
-chmod -R 755 /var/www/Homebase
+udevadm control --reload-rules
+udevadm trigger
 
 ###############################################################################
-# 7. Install systemd units (if present)
+# 6. Verify binaries
 ###############################################################################
-echo "[7/11] Install systemd units"
+step "6/11" "Verify installs"
 
-if compgen -G "systemd/*.service" > /dev/null; then
-  install -m 644 systemd/*.service /etc/systemd/system/
-  systemctl daemon-reload
-fi
+command -v dump1090 >/dev/null && echo "dump1090 OK"
+command -v dump978  >/dev/null && echo "dump978 OK"
 
 ###############################################################################
-# 8. Configure nginx
+# 7. Done
 ###############################################################################
-echo "[8/11] Configure nginx"
+step "11/11" "Install complete"
 
-rm -f /etc/nginx/sites-enabled/default || true
-install -m 644 nginx/homebase.conf /etc/nginx/sites-available/homebase
-ln -sf /etc/nginx/sites-available/homebase /etc/nginx/sites-enabled/homebase
-
-nginx -t
-systemctl restart nginx
-
-###############################################################################
-# 9. Enable services (if defined)
-###############################################################################
-echo "[9/11] Enable services"
-
-systemctl enable homebase-api || true
-systemctl enable homebase-boot || true
-
-###############################################################################
-# 10. Unblock Wi-Fi
-###############################################################################
-echo "[10/11] Unblock Wi-Fi"
-rfkill unblock wifi || true
-
-###############################################################################
-# 11. Done
-###############################################################################
 echo
 echo "======================================"
-echo " Homebase install complete"
+echo " Homebase install completed successfully"
 echo "======================================"
-echo "Reboot recommended:"
-echo "  sudo reboot"
+echo
+echo "Next steps:"
+echo "  • Plug in RTL-SDR dongle(s)"
+echo "  • Test with: sudo dump1090 --interactive"
+echo "  • Test with: sudo dump978 --help"
+echo
