@@ -1,49 +1,48 @@
 #!/usr/bin/env bash
 set -e
 
-APP_ROOT="/opt/homebase"
-SRC_DIR="$APP_ROOT/src"
-WEB_DIR="/var/www/Homebase"
+########################################
+# Homebase Beta Installer (Aeroframe)
+########################################
+
+SRC_DIR="/opt/homebase/src"
 
 echo "======================================"
 echo " Homebase Beta Installer (Aeroframe)"
 echo "======================================"
 
-# --------------------------------------------------
+########################################
 # 1. System update
-# --------------------------------------------------
+########################################
 echo
 echo "[1/11] System update"
 sudo apt update
 sudo apt -y upgrade
 
-# --------------------------------------------------
-# 2. Install build + runtime dependencies
-# --------------------------------------------------
+########################################
+# 2. Install build dependencies
+########################################
 echo
 echo "[2/11] Install build dependencies"
-
 sudo apt install -y \
   git curl ca-certificates rsync gnupg \
-  nginx php-fpm \
-  python3 python3-pip \
+  nginx php-fpm python3 python3-pip \
   dnsmasq hostapd rfkill \
   build-essential cmake pkg-config \
   librtlsdr-dev libusb-1.0-0-dev \
   libncurses-dev libboost-all-dev
 
-# --------------------------------------------------
-# 3. Prepare directories
-# --------------------------------------------------
+########################################
+# 3. Prepare source directories
+########################################
 echo
 echo "[3/11] Prepare source directories"
-
 sudo mkdir -p "$SRC_DIR"
-sudo chown -R "$USER:$USER" "$APP_ROOT"
+sudo chown -R "$USER":"$USER" "$SRC_DIR"
 
-# --------------------------------------------------
-# 4. Build dump1090-fa from source
-# --------------------------------------------------
+########################################
+# 4. Build dump1090-fa (FlightAware)
+########################################
 echo
 echo "[4/11] Build dump1090-fa from source"
 
@@ -54,8 +53,11 @@ if [ ! -d dump1090 ]; then
 fi
 
 cd dump1090
-git fetch origin
-git checkout stable
+git fetch --tags
+
+D1090_TAG=$(git tag --sort=-v:refname | head -n1)
+echo "Using dump1090 tag: $D1090_TAG"
+git checkout "$D1090_TAG"
 
 make clean || true
 make -j"$(nproc)"
@@ -63,9 +65,9 @@ make -j"$(nproc)"
 sudo install -m 0755 dump1090 /usr/local/bin/dump1090-fa
 sudo install -m 0755 view1090 /usr/local/bin/view1090-fa
 
-# --------------------------------------------------
-# 5. Build dump978-fa from source (RTL-SDR ONLY)
-# --------------------------------------------------
+########################################
+# 5. Build dump978-fa (RTL-SDR ONLY)
+########################################
 echo
 echo "[5/11] Build dump978-fa from source (RTL-SDR ONLY, NO SOAPY)"
 
@@ -76,12 +78,15 @@ if [ ! -d dump978 ]; then
 fi
 
 cd dump978
-git fetch origin
-git checkout stable
+git fetch --tags
 
-echo "Hard-disabling SoapySDR in dump978"
+D978_TAG=$(git tag --sort=-v:refname | head -n1)
+echo "Using dump978 tag: $D978_TAG"
+git checkout "$D978_TAG"
 
-# --- Stub header ---
+echo "Hard-disabling SoapySDR"
+
+# Completely stub SoapySDR out
 cat > soapy_source.h <<'EOF'
 #pragma once
 struct SoapySampleSource {
@@ -89,13 +94,11 @@ struct SoapySampleSource {
 };
 EOF
 
-# --- Stub implementation ---
 cat > soapy_source.cc <<'EOF'
 #include "soapy_source.h"
-// SoapySDR intentionally disabled
 EOF
 
-# --- Remove Soapy objects from Makefile ---
+# Remove from build
 sed -i \
   -e 's/soapy_source.o//g' \
   -e 's/soapy_source.cc//g' \
@@ -106,87 +109,20 @@ make -j"$(nproc)" NO_SOAPY=1
 
 sudo install -m 0755 dump978-fa /usr/local/bin/dump978-fa
 
-# --------------------------------------------------
-# 6. Install Homebase web app
-# --------------------------------------------------
+########################################
+# 6. Final summary
+########################################
 echo
-echo "[6/11] Install Homebase web app"
-
-sudo mkdir -p "$WEB_DIR"
-sudo rsync -a --delete "$APP_ROOT/homebase-app/" "$WEB_DIR/"
-
-sudo chown -R www-data:www-data "$WEB_DIR"
-sudo find "$WEB_DIR" -type d -exec chmod 755 {} \;
-sudo find "$WEB_DIR" -type f -exec chmod 644 {} \;
-
-# --------------------------------------------------
-# 7. Configure nginx
-# --------------------------------------------------
+echo "[6/11] Install complete"
 echo
-echo "[7/11] Configure nginx"
-
-NGINX_SITE="/etc/nginx/sites-available/homebase"
-
-if [ ! -f "$NGINX_SITE" ]; then
-sudo tee "$NGINX_SITE" > /dev/null <<'EOF'
-server {
-    listen 80 default_server;
-    root /var/www/Homebase;
-    index index.php index.html;
-
-    location / {
-        try_files $uri $uri/ /index.php?$args;
-    }
-
-    location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php-fpm.sock;
-    }
-}
-EOF
-fi
-
-sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/homebase
-sudo rm -f /etc/nginx/sites-enabled/default
-
-sudo systemctl reload nginx
-
-# --------------------------------------------------
-# 8. Enable RTL-SDR access
-# --------------------------------------------------
+echo "Installed binaries:"
+echo "  - /usr/local/bin/dump1090-fa"
+echo "  - /usr/local/bin/view1090-fa"
+echo "  - /usr/local/bin/dump978-fa"
 echo
-echo "[8/11] Enable RTL-SDR access"
-
-sudo usermod -a -G plugdev "$USER"
-sudo tee /etc/udev/rules.d/20-rtlsdr.rules > /dev/null <<'EOF'
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666"
-EOF
-
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-# --------------------------------------------------
-# 9. Sanity checks
-# --------------------------------------------------
+echo "Next steps:"
+echo "  dump1090-fa --net"
+echo "  dump978-fa --net"
 echo
-echo "[9/11] Sanity checks"
-
-command -v dump1090-fa >/dev/null && echo "✔ dump1090-fa installed"
-command -v dump978-fa  >/dev/null && echo "✔ dump978-fa installed"
-
-# --------------------------------------------------
-# 10. Notes
-# --------------------------------------------------
-echo
-echo "[10/11] Notes"
-echo "• Reboot recommended to apply RTL-SDR permissions"
-echo "• dump1090-fa binary: /usr/local/bin/dump1090-fa"
-echo "• dump978-fa  binary: /usr/local/bin/dump978-fa"
-echo "• Web UI path: /var/www/Homebase"
-
-# --------------------------------------------------
-# 11. Done
-# --------------------------------------------------
-echo
-echo "[11/11] Homebase installation complete."
-echo "Reboot the system before first use."
+echo "Systemd services are NOT installed yet (intentional)."
+echo "======================================"
