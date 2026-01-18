@@ -5,7 +5,6 @@ echo "======================================"
 echo " Homebase Beta Installer (Aeroframe)"
 echo "======================================"
 
-# Must be run as root
 if [[ $EUID -ne 0 ]]; then
   echo "ERROR: Run with sudo:"
   echo "  sudo ./scripts/install.sh"
@@ -16,10 +15,10 @@ fi
 # 0. DNS sanity check (non-destructive)
 ###############################################################################
 echo "[0/11] Ensure DNS resolution"
-if ! getent hosts github.com >/dev/null; then
-  echo "WARNING: DNS lookup failed. Check network connectivity."
-else
+if getent hosts github.com >/dev/null; then
   echo "DNS OK"
+else
+  echo "WARNING: DNS lookup failed"
 fi
 
 ###############################################################################
@@ -60,9 +59,9 @@ make -j"$(nproc)"
 install -m 755 dump1090 /usr/local/bin/dump1090
 
 ###############################################################################
-# 4. Build dump978 (978 MHz UAT)
+# 4. Build dump978 (978 MHz UAT) — RTL-SDR only
 ###############################################################################
-echo "[4/11] Build dump978 from source"
+echo "[4/11] Build dump978 from source (RTL-SDR only)"
 
 if [[ ! -d /opt/dump978 ]]; then
   git clone https://github.com/flightaware/dump978 /opt/dump978
@@ -71,7 +70,10 @@ fi
 cd /opt/dump978
 git pull
 make clean || true
-make -j"$(nproc)"
+
+# Force-disable SoapySDR (NOT needed for FlightAware Pro Stick)
+make -j"$(nproc)" RTLSDR=yes SOAPYSDR=no
+
 install -m 755 dump978-fa /usr/local/bin/dump978
 
 ###############################################################################
@@ -94,7 +96,7 @@ rsync -a --delete homebase-app/ /var/www/Homebase/
 chmod -R 755 /var/www/Homebase
 
 ###############################################################################
-# 7. Install systemd services
+# 7. Install systemd units (if present)
 ###############################################################################
 echo "[7/11] Install systemd units"
 
@@ -104,7 +106,7 @@ if compgen -G "systemd/*.service" > /dev/null; then
 fi
 
 ###############################################################################
-# 8. Install nginx config
+# 8. Configure nginx
 ###############################################################################
 echo "[8/11] Configure nginx"
 
@@ -116,18 +118,15 @@ nginx -t
 systemctl restart nginx
 
 ###############################################################################
-# 9. Enable services
+# 9. Enable services (if defined)
 ###############################################################################
 echo "[9/11] Enable services"
-
-systemctl enable dump1090 || true
-systemctl enable dump978 || true
 
 systemctl enable homebase-api || true
 systemctl enable homebase-boot || true
 
 ###############################################################################
-# 10. Unblock Wi-Fi (needed for AP / setup mode)
+# 10. Unblock Wi-Fi
 ###############################################################################
 echo "[10/11] Unblock Wi-Fi"
 rfkill unblock wifi || true
