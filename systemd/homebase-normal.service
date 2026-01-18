@@ -1,10 +1,7 @@
 [Unit]
-Description=Homebase Normal Mode
+Description=Homebase Normal Network Mode
+After=network.target
 
 [Service]
-Type=oneshot
+ExecStart=/bin/bash -c 'systemctl stop hostapd dnsmasq && systemctl start dhcpcd'
 RemainAfterExit=yes
-ExecStart=/usr/bin/bash -lc 'systemctl stop hostapd dnsmasq; systemctl restart dump1090-fa dump978-fa'
-
-[Install]
-WantedBy=multi-user.target

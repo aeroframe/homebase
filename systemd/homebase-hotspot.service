@@ -1,11 +1,7 @@
 [Unit]
 Description=Homebase Hotspot Mode
+After=network.target
 
 [Service]
-Type=oneshot
+ExecStart=/bin/bash -c 'systemctl stop dhcpcd && systemctl start hostapd dnsmasq'
 RemainAfterExit=yes
-ExecStart=/usr/bin/systemctl start hostapd dnsmasq
-ExecStop=/usr/bin/systemctl stop hostapd dnsmasq
-
-[Install]
-WantedBy=multi-user.target

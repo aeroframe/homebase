@@ -1,10 +1,11 @@
 [Unit]
-Description=Homebase Boot Selector
-After=network.target
+Description=Homebase boot network selector
+After=network-pre.target
+Before=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/homebase/app/boot_mode.sh
+ExecStart=/bin/bash -c 'ping -c1 8.8.8.8 && systemctl start homebase-normal || systemctl start homebase-hotspot'
 
 [Install]
 WantedBy=multi-user.target
