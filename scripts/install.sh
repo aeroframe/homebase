@@ -12,120 +12,92 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # --------------------------------------------------
-# [0/13] Ensure DNS resolution (Pi OS compatible)
+# [0/12] Ensure DNS resolution (Pi OS compatible)
 # --------------------------------------------------
-echo "[0/13] Ensure DNS resolution"
+echo "[0/12] Ensure DNS resolution"
 
-if systemctl list-unit-files | grep -q systemd-resolved; then
-  echo "Using systemd-resolved"
-
-  mkdir -p /etc/systemd/resolved.conf.d
-  cat > /etc/systemd/resolved.conf.d/homebase.conf <<EOF
-[Resolve]
-DNS=8.8.8.8 1.1.1.1
-FallbackDNS=9.9.9.9
-EOF
-
-  systemctl restart systemd-resolved
-  ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
-else
-  echo "Using dhcpcd / resolv.conf fallback"
-
-  cat > /etc/resolv.conf <<EOF
+cat > /etc/resolv.conf <<EOF
 nameserver 8.8.8.8
 nameserver 1.1.1.1
 nameserver 9.9.9.9
 EOF
 
-  # Prevent DHCP overwrite during setup
-  chattr +i /etc/resolv.conf || true
-fi
+chattr +i /etc/resolv.conf || true
 
 # --------------------------------------------------
-# [1/13] System update
+# [1/12] System update
 # --------------------------------------------------
-echo "[1/13] System update"
+echo "[1/12] System update"
 apt-get update -y
 apt-get upgrade -y
 
 # --------------------------------------------------
-# [2/13] Install base packages
+# [2/12] Install base packages
 # --------------------------------------------------
-echo "[2/13] Install base packages"
+echo "[2/12] Install base packages"
 apt-get install -y \
   git curl ca-certificates rsync gnupg \
   nginx php-fpm \
   python3 python3-pip \
-  dnsmasq hostapd rfkill \
-  chromium-browser || true
+  dnsmasq hostapd rfkill
 
 # --------------------------------------------------
-# [3/13] Install dump1090 + dump978 (FlightAware)
+# [3/12] Install FlightAware repository
 # --------------------------------------------------
-echo "[3/13] Install dump1090-fa and dump978-fa"
+echo "[3/12] Install FlightAware APT repository"
 
-if ! apt-cache show dump1090-fa >/dev/null 2>&1; then
-  curl -fsSL https://flightaware.com/adsb/piaware/files/packages/piaware-repository_8.2_all.deb -o /tmp/piaware-repo.deb
+if ! dpkg -l | grep -q piaware-repository; then
+  curl -fsSL \
+    https://flightaware.com/adsb/piaware/files/packages/piaware-repository_8_all.deb \
+    -o /tmp/piaware-repo.deb
+
   dpkg -i /tmp/piaware-repo.deb
   apt-get update
 fi
 
+# --------------------------------------------------
+# [4/12] Install dump1090-fa and dump978-fa
+# --------------------------------------------------
+echo "[4/12] Install dump1090-fa and dump978-fa"
 apt-get install -y dump1090-fa dump978-fa
 
 # --------------------------------------------------
-# [4/13] Disable AP services (Homebase controls these)
+# [5/12] Disable AP services (Homebase manages)
 # --------------------------------------------------
-echo "[4/13] Disable AP services"
+echo "[5/12] Disable AP services"
 systemctl disable --now hostapd dnsmasq || true
 
 # --------------------------------------------------
-# [5/13] Create Homebase directories
+# [6/12] Create directories
 # --------------------------------------------------
-echo "[5/13] Create Homebase directories"
+echo "[6/12] Create directories"
 mkdir -p /opt/homebase/{scripts,data}
 mkdir -p /var/www/Homebase
-chown -R pi:pi /opt/homebase || true
+
+chown -R root:root /opt/homebase
 chown -R www-data:www-data /var/www/Homebase
 chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
-# [6/13] Install Python dependencies
+# [7/12] Python dependencies
 # --------------------------------------------------
-echo "[6/13] Python dependencies"
+echo "[7/12] Python dependencies"
 pip3 install --upgrade pip
 pip3 install flask requests
 
 # --------------------------------------------------
-# [7/13] Install systemd units
+# [8/12] Install systemd services
 # --------------------------------------------------
-echo "[7/13] Install systemd services"
+echo "[8/12] Install systemd units"
 if [[ -d systemd ]]; then
   install -m 644 systemd/*.service /etc/systemd/system/
   systemctl daemon-reload
 fi
 
 # --------------------------------------------------
-# [8/13] Install hotspot configs
+# [9/12] Nginx config
 # --------------------------------------------------
-echo "[8/13] Install hotspot configs"
-
-if [[ -f config/hostapd.conf ]]; then
-  install -m 600 config/hostapd.conf /etc/hostapd/hostapd.conf
-  sed -i 's|^#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-fi
-
-if [[ -f config/dnsmasq-homebase.conf ]]; then
-  install -m 644 config/dnsmasq-homebase.conf /etc/dnsmasq.d/homebase.conf
-fi
-
-if [[ -f config/dhcpcd-homebase.conf ]]; then
-  install -m 644 config/dhcpcd-homebase.conf /etc/dhcpcd.conf.d/homebase.conf
-fi
-
-# --------------------------------------------------
-# [9/13] Install nginx site
-# --------------------------------------------------
-echo "[9/13] Install nginx config"
+echo "[9/12] Install nginx config"
 
 rm -f /etc/nginx/sites-enabled/default || true
 
@@ -138,48 +110,29 @@ nginx -t
 systemctl restart nginx
 
 # --------------------------------------------------
-# [10/13] Deploy Homebase web app
+# [10/12] Deploy Homebase web app
 # --------------------------------------------------
-echo "[10/13] Deploy Homebase web app"
-
+echo "[10/12] Deploy Homebase web app"
 rsync -a --delete homebase-app/ /var/www/Homebase/
 
 chown -R www-data:www-data /var/www/Homebase
 chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
-# [11/13] Enable services
+# [11/12] Enable services
 # --------------------------------------------------
-echo "[11/13] Enable services"
-
+echo "[11/12] Enable ADS-B services"
 systemctl enable dump1090-fa
 systemctl enable dump978-fa
 
-if systemctl list-unit-files | grep -q homebase-api; then
-  systemctl enable homebase-api
-fi
-
-if systemctl list-unit-files | grep -q homebase-boot; then
-  systemctl enable homebase-boot
-fi
-
 # --------------------------------------------------
-# [12/13] Unblock Wi-Fi
+# [12/12] Finish
 # --------------------------------------------------
-echo "[12/13] Unblock Wi-Fi"
-rfkill unblock wifi || true
-
-# --------------------------------------------------
-# [13/13] Finalize
-# --------------------------------------------------
-echo "[13/13] Final cleanup"
-
-# DNS can be unlocked later after Wi-Fi setup
-echo "NOTE: /etc/resolv.conf is locked during setup"
+echo "[12/12] Installation complete"
 
 echo
 echo "======================================"
-echo " Homebase installation complete"
+echo " Homebase installed successfully"
 echo "======================================"
-echo "Reboot now:"
+echo "Reboot recommended:"
 echo "  sudo reboot"
