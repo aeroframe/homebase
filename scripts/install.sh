@@ -12,10 +12,9 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # --------------------------------------------------
-# [0/12] Ensure DNS resolution (safe re-run)
+# [0/11] Ensure DNS resolution (safe re-run)
 # --------------------------------------------------
-echo "[0/12] Ensure DNS resolution"
-
+echo "[0/11] Ensure DNS resolution"
 chattr -i /etc/resolv.conf 2>/dev/null || true
 
 cat > /etc/resolv.conf <<EOF
@@ -24,55 +23,99 @@ nameserver 1.1.1.1
 nameserver 9.9.9.9
 EOF
 
-chattr +i /etc/resolv.conf || true
-
 # --------------------------------------------------
-# [1/12] System update
+# [1/11] System update
 # --------------------------------------------------
-echo "[1/12] System update"
+echo "[1/11] System update"
 apt-get update -y
 apt-get upgrade -y
 
 # --------------------------------------------------
-# [2/12] Base packages
+# [2/11] Install base + build dependencies
 # --------------------------------------------------
-echo "[2/12] Install base packages"
+echo "[2/11] Install build dependencies"
 apt-get install -y \
-  git curl ca-certificates rsync gnupg \
+  git curl ca-certificates rsync \
   nginx php-fpm \
   python3 python3-pip \
-  dnsmasq hostapd rfkill
+  dnsmasq hostapd rfkill \
+  build-essential cmake pkg-config \
+  librtlsdr-dev libusb-1.0-0-dev
 
 # --------------------------------------------------
-# [3/12] Install FlightAware repository (FIXED)
+# [3/11] Build & install dump1090 (GitHub)
 # --------------------------------------------------
-echo "[3/12] Install FlightAware repository"
+echo "[3/11] Build dump1090 from source"
 
-if ! dpkg -l | grep -q piaware-repository; then
-  curl -fsSL \
-    https://flightaware.com/adsb/piaware/files/packages/piaware-repository_latest_all.deb \
-    -o /tmp/piaware-repo.deb
-
-  dpkg -i /tmp/piaware-repo.deb
-  apt-get update
+if [[ ! -d /opt/dump1090 ]]; then
+  git clone https://github.com/flightaware/dump1090.git /opt/dump1090
 fi
 
-# --------------------------------------------------
-# [4/12] Install dump1090-fa + dump978-fa
-# --------------------------------------------------
-echo "[4/12] Install dump1090-fa and dump978-fa"
-apt-get install -y dump1090-fa dump978-fa
+cd /opt/dump1090
+make clean || true
+make -j$(nproc)
+
+install -m 755 dump1090 /usr/local/bin/dump1090
 
 # --------------------------------------------------
-# [5/12] Disable AP services
+# [4/11] Build & install dump978 (GitHub)
 # --------------------------------------------------
-echo "[5/12] Disable AP services"
+echo "[4/11] Build dump978 from source"
+
+if [[ ! -d /opt/dump978 ]]; then
+  git clone https://github.com/flightaware/dump978.git /opt/dump978
+fi
+
+cd /opt/dump978
+make clean || true
+make -j$(nproc)
+
+install -m 755 dump978 /usr/local/bin/dump978
+
+# --------------------------------------------------
+# [5/11] Install systemd services
+# --------------------------------------------------
+echo "[5/11] Install ADS-B systemd services"
+
+cat > /etc/systemd/system/dump1090.service <<EOF
+[Unit]
+Description=dump1090 ADS-B Receiver
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/dump1090 --net --device-index 0
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/dump978.service <<EOF
+[Unit]
+Description=dump978 UAT Receiver
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/dump978 --json-port 30978
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable dump1090 dump978
+
+# --------------------------------------------------
+# [6/11] Disable AP services (managed later)
+# --------------------------------------------------
+echo "[6/11] Disable AP services"
 systemctl disable --now hostapd dnsmasq || true
 
 # --------------------------------------------------
-# [6/12] Create directories
+# [7/11] Create Homebase directories
 # --------------------------------------------------
-echo "[6/12] Create directories"
+echo "[7/11] Create Homebase directories"
 
 mkdir -p /opt/homebase/{scripts,data}
 mkdir -p /var/www/Homebase
@@ -84,26 +127,16 @@ chown -R www-data:www-data /var/www/Homebase
 chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
-# [7/12] Python deps
+# [8/11] Python deps
 # --------------------------------------------------
-echo "[7/12] Python dependencies"
+echo "[8/11] Python dependencies"
 pip3 install --upgrade pip
 pip3 install flask requests
 
 # --------------------------------------------------
-# [8/12] systemd units
+# [9/11] Nginx config
 # --------------------------------------------------
-echo "[8/12] Install systemd units"
-
-if [[ -d systemd ]]; then
-  install -m 644 systemd/*.service /etc/systemd/system/
-  systemctl daemon-reload
-fi
-
-# --------------------------------------------------
-# [9/12] Nginx
-# --------------------------------------------------
-echo "[9/12] Install nginx config"
+echo "[9/11] Install nginx config"
 
 rm -f /etc/nginx/sites-enabled/default || true
 
@@ -116,24 +149,13 @@ nginx -t
 systemctl restart nginx
 
 # --------------------------------------------------
-# [10/12] Web app
+# [10/11] Deploy Homebase web app
 # --------------------------------------------------
-echo "[10/12] Deploy Homebase web app"
-
+echo "[10/11] Deploy Homebase web app"
 rsync -a --delete homebase-app/ /var/www/Homebase/
-chown -R www-data:www-data /var/www/Homebase
-chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
-# [11/12] Enable ADS-B services
-# --------------------------------------------------
-echo "[11/12] Enable ADS-B services"
-
-systemctl enable dump1090-fa
-systemctl enable dump978-fa
-
-# --------------------------------------------------
-# [12/12] Done
+# [11/11] Finish
 # --------------------------------------------------
 echo
 echo "======================================"
