@@ -1,0 +1,60 @@
+body {
+	  font-family: system-ui, -apple-system;
+	  background: #0b0f14;
+	  color: #e6e8eb;
+	  display: flex;
+	  justify-content: center;
+	  align-items: center;
+	  height: 100vh;
+	}
+	
+	.login-card {
+	  background: #131a22;
+	  padding: 32px;
+	  width: 360px;
+	  border-radius: 10px;
+	  text-align: center;
+	}
+	
+	.logo {
+	  width: 48px;
+	  margin-bottom: 12px;
+	}
+	
+	input {
+	  width: 100%;
+	  padding: 10px;
+	  margin-top: 12px;
+	  background: #0b0f14;
+	  border: 1px solid #2b3440;
+	  color: #fff;
+	}
+	
+	button {
+	  margin-top: 16px;
+	  width: 100%;
+	  padding: 10px;
+	  background: #2f80ed;
+	  border: none;
+	  color: white;
+	  font-weight: 600;
+	}
+	
+	.context-box {
+	  background: #0b0f14;
+	  border: 1px solid #2b3440;
+	  padding: 10px;
+	  margin: 14px 0;
+	  font-size: 13px;
+	}
+	
+	.error {
+	  background: #402020;
+	  padding: 8px;
+	  margin: 10px 0;
+	}
+	
+	.footer {
+	  margin-top: 14px;
+	  font-size: 13px;
+	}

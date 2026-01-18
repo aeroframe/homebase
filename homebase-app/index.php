@@ -1,55 +1,24 @@
 <?php
-$ip = $_SERVER['SERVER_ADDR'];
+require __DIR__ . '/auth.php';
 ?>
-
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Homebase Feeds</title>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: sans-serif; background:#0b0b0b; color:#eee; }
-    a { color:#4da3ff; }
-    pre { background:#111; padding:10px; overflow:auto; max-height:300px; }
-    .box { margin-bottom:30px; }
-  </style>
+<meta charset="utf-8">
+<title>Homebase</title>
 </head>
 <body>
 
-<h1>✈️ Homebase Feeds</h1>
-<p>Device: <?= $ip ?></p>
+<h1>Homebase</h1>
+<p>Logged in as <strong><?= htmlspecialchars($_SESSION['user']['email']) ?></strong></p>
 
-<div class="box">
-  <h2>dump1090 (ADS-B)</h2>
-  <a href="http://<?= $ip ?>:30047/data/aircraft.json" target="_blank">
-    JSON Feed
-  </a>
-  <pre id="adsb"></pre>
-</div>
+<ul>
+    <li><a href="/feeds/combined.php">Combined Feed</a></li>
+    <li><a href="/feeds/dump1090-aircraft.php">ADS-B (1090)</a></li>
+    <li><a href="/feeds/dump978-latest.php">UAT (978)</a></li>
+</ul>
 
-<div class="box">
-  <h2>dump978 (UAT)</h2>
-  <a href="http://<?= $ip ?>:30979" target="_blank">
-    JSON Feed
-  </a>
-  <pre id="uat"></pre>
-</div>
-
-<script>
-async function load(url, el) {
-  try {
-    const r = await fetch(url);
-    const j = await r.json();
-    document.getElementById(el).textContent =
-      JSON.stringify(j, null, 2);
-  } catch {
-    document.getElementById(el).textContent = 'No data';
-  }
-}
-
-load('http://<?= $ip ?>:30047/data/aircraft.json','adsb');
-load('http://<?= $ip ?>:30979','uat');
-</script>
+<a href="/logout.php">Sign out</a>
 
 </body>
 </html>
