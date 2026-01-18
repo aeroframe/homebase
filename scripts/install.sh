@@ -12,19 +12,19 @@ D1090_DIR="$SRC_DIR/dump1090"
 D978_DIR="$SRC_DIR/dump978"
 
 STEP=0
-next() {
+step() {
   STEP=$((STEP+1))
   echo
   echo "[$STEP/11] $1"
 }
 
 # --------------------------------------------------
-next "System update"
+step "System update"
 apt update
 apt -y upgrade || true
 
 # --------------------------------------------------
-next "Install build dependencies"
+step "Install build dependencies"
 apt install -y \
   git curl ca-certificates rsync gnupg \
   nginx php-fpm python3 python3-pip \
@@ -34,11 +34,11 @@ apt install -y \
   libncurses-dev libboost-all-dev
 
 # --------------------------------------------------
-next "Prepare source directories"
+step "Prepare source directories"
 mkdir -p "$SRC_DIR"
 
 # --------------------------------------------------
-next "Build dump1090-fa from source"
+step "Build dump1090-fa from source"
 if [ ! -d "$D1090_DIR" ]; then
   git clone https://github.com/flightaware/dump1090.git "$D1090_DIR"
 fi
@@ -54,7 +54,7 @@ install -m 755 dump1090 /usr/local/bin/dump1090-fa
 install -m 755 view1090 /usr/local/bin/view1090-fa
 
 # --------------------------------------------------
-next "Build dump978-fa from source (NO SOAPY)"
+step "Build dump978-fa from source (RTL-SDR ONLY, HARD NO SOAPY)"
 
 if [ ! -d "$D978_DIR" ]; then
   git clone https://github.com/flightaware/dump978.git "$D978_DIR"
@@ -64,30 +64,43 @@ cd "$D978_DIR"
 git fetch origin
 git reset --hard origin/master
 
-# ---- PATCH soapy_source.h safely ----
-PATCH_MARKER="AEROFAME_NO_SOAPY_PATCH"
+# --------------------------------------------------
+# HARD PATCH: Replace soapy_source.h entirely
+# --------------------------------------------------
+echo "Patching dump978 to remove SoapySDR entirely"
 
-if ! grep -q "$PATCH_MARKER" soapy_source.h; then
-  echo "Applying NO_SOAPY patch to soapy_source.h"
+cat > soapy_source.h <<'EOF'
+#pragma once
+/* HARD NO-SOAPY stub
+ * This file intentionally removes all SoapySDR usage.
+ * dump978 RTL-SDR mode only.
+ */
 
-  sed -i '1i\
-#ifndef NO_SOAPY\
-#include <SoapySDR/Device.hpp>\
-#include <SoapySDR/Types.hpp>\
-#endif\
-/* AEROFAME_NO_SOAPY_PATCH */\
-' soapy_source.h
-else
-  echo "NO_SOAPY patch already applied"
-fi
+struct soapy_source_t {};
 
+static inline soapy_source_t* soapy_source_create(const char*) {
+  return nullptr;
+}
+
+static inline void soapy_source_destroy(soapy_source_t*) {}
+
+static inline int soapy_source_start(soapy_source_t*) {
+  return -1;
+}
+
+static inline int soapy_source_stop(soapy_source_t*) {
+  return -1;
+}
+EOF
+
+# --------------------------------------------------
 make clean || true
 make -j"$(nproc)" NO_SOAPY=1
 
 install -m 755 dump978-fa /usr/local/bin/dump978-fa
 
 # --------------------------------------------------
-next "Blacklist DVB kernel drivers (RTL-SDR)"
+step "Blacklist DVB kernel drivers (RTL-SDR)"
 cat >/etc/modprobe.d/rtl-sdr-blacklist.conf <<EOF
 blacklist dvb_usb_rtl28xxu
 blacklist rtl2832
@@ -95,23 +108,21 @@ blacklist rtl2830
 EOF
 
 # --------------------------------------------------
-next "Reload udev rules"
+step "Reload udev rules"
 udevadm control --reload-rules
 udevadm trigger
 
 # --------------------------------------------------
-next "Install completed binaries"
+step "Verify installed binaries"
 ls -lh /usr/local/bin/dump1090-fa /usr/local/bin/dump978-fa
 
 # --------------------------------------------------
-next "Done"
+step "Done"
 echo
 echo "✅ Homebase install complete"
 echo
-echo "Next steps:"
-echo "  • Plug in RTL-SDR"
-echo "  • Test dump1090:"
-echo "      dump1090-fa --interactive"
-echo "  • Test dump978:"
-echo "      dump978-fa --ifile /dev/null"
+echo "Test commands:"
+echo "  rtl_test -t"
+echo "  dump1090-fa --interactive"
+echo "  dump978-fa --ifile /dev/null"
 echo
