@@ -12,9 +12,11 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # --------------------------------------------------
-# [0/11] Ensure DNS resolution (safe re-run)
+# [0/11] Ensure DNS resolution (safe + re-runnable)
 # --------------------------------------------------
 echo "[0/11] Ensure DNS resolution"
+
+# Unlock if previously locked
 chattr -i /etc/resolv.conf 2>/dev/null || true
 
 cat > /etc/resolv.conf <<EOF
@@ -34,16 +36,18 @@ apt-get upgrade -y
 # [2/11] Install base + build dependencies
 # --------------------------------------------------
 echo "[2/11] Install build dependencies"
+
 apt-get install -y \
-  git curl ca-certificates rsync \
+  git curl ca-certificates rsync gnupg \
   nginx php-fpm \
   python3 python3-pip \
   dnsmasq hostapd rfkill \
   build-essential cmake pkg-config \
-  librtlsdr-dev libusb-1.0-0-dev
+  librtlsdr-dev libusb-1.0-0-dev \
+  libncurses-dev
 
 # --------------------------------------------------
-# [3/11] Build & install dump1090 (GitHub)
+# [3/11] Build dump1090 from GitHub (headless)
 # --------------------------------------------------
 echo "[3/11] Build dump1090 from source"
 
@@ -52,13 +56,15 @@ if [[ ! -d /opt/dump1090 ]]; then
 fi
 
 cd /opt/dump1090
+git pull || true
+
 make clean || true
-make -j$(nproc)
+make -j$(nproc) NOINTERACTIVE=1
 
 install -m 755 dump1090 /usr/local/bin/dump1090
 
 # --------------------------------------------------
-# [4/11] Build & install dump978 (GitHub)
+# [4/11] Build dump978 from GitHub
 # --------------------------------------------------
 echo "[4/11] Build dump978 from source"
 
@@ -67,6 +73,8 @@ if [[ ! -d /opt/dump978 ]]; then
 fi
 
 cd /opt/dump978
+git pull || true
+
 make clean || true
 make -j$(nproc)
 
@@ -83,8 +91,9 @@ Description=dump1090 ADS-B Receiver
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/dump1090 --net --device-index 0
+ExecStart=/usr/local/bin/dump1090 --net --quiet
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -98,6 +107,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/dump978 --json-port 30978
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -107,7 +117,7 @@ systemctl daemon-reload
 systemctl enable dump1090 dump978
 
 # --------------------------------------------------
-# [6/11] Disable AP services (managed later)
+# [6/11] Disable AP services (Homebase manages later)
 # --------------------------------------------------
 echo "[6/11] Disable AP services"
 systemctl disable --now hostapd dnsmasq || true
@@ -127,14 +137,14 @@ chown -R www-data:www-data /var/www/Homebase
 chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
-# [8/11] Python deps
+# [8/11] Python dependencies
 # --------------------------------------------------
 echo "[8/11] Python dependencies"
 pip3 install --upgrade pip
 pip3 install flask requests
 
 # --------------------------------------------------
-# [9/11] Nginx config
+# [9/11] Install nginx configuration
 # --------------------------------------------------
 echo "[9/11] Install nginx config"
 
@@ -152,14 +162,18 @@ systemctl restart nginx
 # [10/11] Deploy Homebase web app
 # --------------------------------------------------
 echo "[10/11] Deploy Homebase web app"
+
 rsync -a --delete homebase-app/ /var/www/Homebase/
+
+chown -R www-data:www-data /var/www/Homebase
+chmod -R 755 /var/www/Homebase
 
 # --------------------------------------------------
 # [11/11] Finish
 # --------------------------------------------------
 echo
 echo "======================================"
-echo " Homebase installed successfully"
+echo " Homebase installation complete"
 echo "======================================"
 echo "Reboot recommended:"
 echo "  sudo reboot"
