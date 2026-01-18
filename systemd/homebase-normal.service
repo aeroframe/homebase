@@ -1,0 +1,10 @@
+[Unit]
+Description=Homebase Normal Mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash -lc 'systemctl stop hostapd dnsmasq; systemctl restart dump1090-fa dump978-fa'
+
+[Install]
+WantedBy=multi-user.target

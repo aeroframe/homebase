@@ -1,0 +1,11 @@
+[Unit]
+Description=Homebase Hotspot Mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl start hostapd dnsmasq
+ExecStop=/usr/bin/systemctl stop hostapd dnsmasq
+
+[Install]
+WantedBy=multi-user.target
