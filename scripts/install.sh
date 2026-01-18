@@ -5,36 +5,33 @@ echo "======================================"
 echo " Homebase Beta Installer (Aeroframe)"
 echo "======================================"
 
+# Must be run as root
 if [[ $EUID -ne 0 ]]; then
   echo "ERROR: Run with sudo:"
   echo "  sudo ./scripts/install.sh"
   exit 1
 fi
 
-# --------------------------------------------------
-# [0/11] Ensure DNS resolution (safe + re-runnable)
-# --------------------------------------------------
+###############################################################################
+# 0. DNS sanity check (non-destructive)
+###############################################################################
 echo "[0/11] Ensure DNS resolution"
+if ! getent hosts github.com >/dev/null; then
+  echo "WARNING: DNS lookup failed. Check network connectivity."
+else
+  echo "DNS OK"
+fi
 
-# Unlock if previously locked
-chattr -i /etc/resolv.conf 2>/dev/null || true
-
-cat > /etc/resolv.conf <<EOF
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 9.9.9.9
-EOF
-
-# --------------------------------------------------
-# [1/11] System update
-# --------------------------------------------------
+###############################################################################
+# 1. System update
+###############################################################################
 echo "[1/11] System update"
 apt-get update -y
-apt-get upgrade -y
+apt-get upgrade -y || true
 
-# --------------------------------------------------
-# [2/11] Install base + build dependencies
-# --------------------------------------------------
+###############################################################################
+# 2. Install build + runtime dependencies
+###############################################################################
 echo "[2/11] Install build dependencies"
 
 apt-get install -y \
@@ -44,136 +41,103 @@ apt-get install -y \
   dnsmasq hostapd rfkill \
   build-essential cmake pkg-config \
   librtlsdr-dev libusb-1.0-0-dev \
-  libncurses-dev
+  libncurses-dev \
+  libboost-all-dev
 
-# --------------------------------------------------
-# [3/11] Build dump1090 from GitHub (headless)
-# --------------------------------------------------
+###############################################################################
+# 3. Build dump1090 (1090 MHz ADS-B)
+###############################################################################
 echo "[3/11] Build dump1090 from source"
 
 if [[ ! -d /opt/dump1090 ]]; then
-  git clone https://github.com/flightaware/dump1090.git /opt/dump1090
+  git clone https://github.com/flightaware/dump1090 /opt/dump1090
 fi
 
 cd /opt/dump1090
-git pull || true
-
+git pull
 make clean || true
-make -j$(nproc) NOINTERACTIVE=1
-
+make -j"$(nproc)"
 install -m 755 dump1090 /usr/local/bin/dump1090
 
-# --------------------------------------------------
-# [4/11] Build dump978 from GitHub
-# --------------------------------------------------
+###############################################################################
+# 4. Build dump978 (978 MHz UAT)
+###############################################################################
 echo "[4/11] Build dump978 from source"
 
 if [[ ! -d /opt/dump978 ]]; then
-  git clone https://github.com/flightaware/dump978.git /opt/dump978
+  git clone https://github.com/flightaware/dump978 /opt/dump978
 fi
 
 cd /opt/dump978
-git pull || true
-
+git pull
 make clean || true
-make -j$(nproc)
+make -j"$(nproc)"
+install -m 755 dump978-fa /usr/local/bin/dump978
 
-install -m 755 dump978 /usr/local/bin/dump978
+###############################################################################
+# 5. Create Homebase directories
+###############################################################################
+echo "[5/11] Create Homebase directories"
 
-# --------------------------------------------------
-# [5/11] Install systemd services
-# --------------------------------------------------
-echo "[5/11] Install ADS-B systemd services"
-
-cat > /etc/systemd/system/dump1090.service <<EOF
-[Unit]
-Description=dump1090 ADS-B Receiver
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/dump1090 --net --quiet
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat > /etc/systemd/system/dump978.service <<EOF
-[Unit]
-Description=dump978 UAT Receiver
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/dump978 --json-port 30978
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable dump1090 dump978
-
-# --------------------------------------------------
-# [6/11] Disable AP services (Homebase manages later)
-# --------------------------------------------------
-echo "[6/11] Disable AP services"
-systemctl disable --now hostapd dnsmasq || true
-
-# --------------------------------------------------
-# [7/11] Create Homebase directories
-# --------------------------------------------------
-echo "[7/11] Create Homebase directories"
-
-mkdir -p /opt/homebase/{scripts,data}
+mkdir -p /opt/homebase/{app,data,scripts,config}
 mkdir -p /var/www/Homebase
 
 chown -R root:root /opt/homebase
-chmod -R 755 /opt/homebase
-
 chown -R www-data:www-data /var/www/Homebase
+
+###############################################################################
+# 6. Install Homebase web app
+###############################################################################
+echo "[6/11] Install Homebase web app"
+
+rsync -a --delete homebase-app/ /var/www/Homebase/
 chmod -R 755 /var/www/Homebase
 
-# --------------------------------------------------
-# [8/11] Python dependencies
-# --------------------------------------------------
-echo "[8/11] Python dependencies"
-pip3 install --upgrade pip
-pip3 install flask requests
+###############################################################################
+# 7. Install systemd services
+###############################################################################
+echo "[7/11] Install systemd units"
 
-# --------------------------------------------------
-# [9/11] Install nginx configuration
-# --------------------------------------------------
-echo "[9/11] Install nginx config"
+if compgen -G "systemd/*.service" > /dev/null; then
+  install -m 644 systemd/*.service /etc/systemd/system/
+  systemctl daemon-reload
+fi
+
+###############################################################################
+# 8. Install nginx config
+###############################################################################
+echo "[8/11] Configure nginx"
 
 rm -f /etc/nginx/sites-enabled/default || true
-
-if [[ -f nginx/homebase.conf ]]; then
-  install -m 644 nginx/homebase.conf /etc/nginx/sites-available/homebase
-  ln -sf /etc/nginx/sites-available/homebase /etc/nginx/sites-enabled/homebase
-fi
+install -m 644 nginx/homebase.conf /etc/nginx/sites-available/homebase
+ln -sf /etc/nginx/sites-available/homebase /etc/nginx/sites-enabled/homebase
 
 nginx -t
 systemctl restart nginx
 
-# --------------------------------------------------
-# [10/11] Deploy Homebase web app
-# --------------------------------------------------
-echo "[10/11] Deploy Homebase web app"
+###############################################################################
+# 9. Enable services
+###############################################################################
+echo "[9/11] Enable services"
 
-rsync -a --delete homebase-app/ /var/www/Homebase/
+systemctl enable dump1090 || true
+systemctl enable dump978 || true
 
-chown -R www-data:www-data /var/www/Homebase
-chmod -R 755 /var/www/Homebase
+systemctl enable homebase-api || true
+systemctl enable homebase-boot || true
 
-# --------------------------------------------------
-# [11/11] Finish
-# --------------------------------------------------
+###############################################################################
+# 10. Unblock Wi-Fi (needed for AP / setup mode)
+###############################################################################
+echo "[10/11] Unblock Wi-Fi"
+rfkill unblock wifi || true
+
+###############################################################################
+# 11. Done
+###############################################################################
 echo
 echo "======================================"
-echo " Homebase installation complete"
+echo " Homebase install complete"
 echo "======================================"
 echo "Reboot recommended:"
 echo "  sudo reboot"
