@@ -1,7 +1,0 @@
-[Unit]
-Description=Homebase Normal Network Mode
-After=network.target
-
-[Service]
-ExecStart=/bin/bash -c 'systemctl stop hostapd dnsmasq && systemctl start dhcpcd'
-RemainAfterExit=yes
