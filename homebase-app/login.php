@@ -9,16 +9,19 @@ if (isset($_SESSION['user'])) {
 $error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-	$email = $_POST['email'] ?? '';
+	$email = trim($_POST['email'] ?? '');
 	$password = $_POST['password'] ?? '';
 
-	if ($email && $password) {
+	if ($email !== '' && $password !== '') {
+
 		$ch = curl_init('https://aerofra.me/login_submit.php');
 
 		curl_setopt_array($ch, [
 			CURLOPT_POST => true,
 			CURLOPT_POSTFIELDS => http_build_query([
-				'email' => $email,
+				// 🔑 CRITICAL FIX:
+				// login_submit.php expects THESE names
+				'username' => $email,
 				'password' => $password
 			]),
 			CURLOPT_RETURNTRANSFER => true,
@@ -31,16 +34,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		curl_close($ch);
 
-		// SUCCESS CASE:
-		// Aeroframe redirects to /app or dashboard on success
-		if ($httpCode === 302 && str_contains($response, 'Location: /app')) {
+		// Successful login on Aeroframe = redirect
+		if ($httpCode === 302) {
 
-			// Fetch user info using Aeroframe session endpoint
+			// Fetch user profile (same as real app)
 			$ch = curl_init('https://aerofra.me/api/auth/user.php');
 			curl_setopt_array($ch, [
 				CURLOPT_RETURNTRANSFER => true,
-				CURLOPT_COOKIEFILE => '',
-				CURLOPT_COOKIEJAR => ''
+				CURLOPT_TIMEOUT => 5
 			]);
 			$userJson = curl_exec($ch);
 			curl_close($ch);
