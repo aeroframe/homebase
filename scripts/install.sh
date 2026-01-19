@@ -3,15 +3,7 @@ set -euo pipefail
 
 ############################################################
 # Homebase Installer (Aeroframe)
-# Raspberry Pi OS / Debian (Trixie)
-#
-# FINAL, BOOT-SAFE DESIGN
-# - NO hotspot
-# - NO network switching
-# - SSH always preserved
-# - nginx + PHP-FPM start AFTER reboot
-# - homebase.local via Avahi
-# - SDR hardware optional
+# FINAL BOOT-SAFE VERSION
 ############################################################
 
 TARGET_HOSTNAME="homebase"
@@ -31,7 +23,7 @@ LOG_FILE="/var/log/homebase-install.log"
 log() { echo -e "\n[$(date '+%H:%M:%S')] $*"; }
 
 require_root() {
-  [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./scripts/install.sh"; exit 1; }
+  [[ $EUID -eq 0 ]] || { echo "Run with sudo"; exit 1; }
 }
 
 wait_for_apt() {
@@ -60,12 +52,9 @@ ensure_php_fpm_running() {
   log "Ensuring PHP-FPM is running"
 
   local php_svc
-  php_svc="$(systemctl list-unit-files | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' | sort -V | tail -n1)"
-
-  if [[ -z "$php_svc" ]]; then
-    echo "ERROR: PHP-FPM service not found"
-    exit 1
-  fi
+  php_svc="$(systemctl list-unit-files | awk '{print $1}' \
+    | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' \
+    | sort -V | tail -n1)"
 
   systemctl enable --now "$php_svc"
 
@@ -74,18 +63,20 @@ ensure_php_fpm_running() {
     sleep 1
   done
 
-  echo "ERROR: PHP-FPM socket never appeared"
+  echo "ERROR: PHP-FPM socket not found"
   exit 1
 }
 
 ############################################################
-# nginx boot-order FIX (CRITICAL)
+# nginx boot fix
 ############################################################
-fix_nginx_boot_order() {
-  log "Fixing nginx boot ordering (PHP-FPM dependency)"
+fix_nginx_boot() {
+  log "Fixing nginx boot order"
 
   local php_svc
-  php_svc="$(systemctl list-unit-files | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' | sort -V | tail -n1)"
+  php_svc="$(systemctl list-unit-files | awk '{print $1}' \
+    | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' \
+    | sort -V | tail -n1)"
 
   mkdir -p /etc/systemd/system/nginx.service.d
 
@@ -104,7 +95,7 @@ EOF
 }
 
 ############################################################
-# 0. Baseline system
+# Baseline system
 ############################################################
 baseline_system() {
   log "[0/8] Baseline system"
@@ -114,22 +105,13 @@ baseline_system() {
 
   systemctl enable --now ssh avahi-daemon
 
-  if ! locale -a | grep -qi en_GB.utf8; then
-    sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
-    locale-gen
-  fi
-
   hostnamectl set-hostname "$TARGET_HOSTNAME"
 
-  if grep -q '^127.0.1.1' /etc/hosts; then
-    sed -i "s/^127.0.1.1.*/127.0.1.1 $TARGET_HOSTNAME/" /etc/hosts
-  else
-    echo "127.0.1.1 $TARGET_HOSTNAME" >> /etc/hosts
-  fi
+  sed -i "s/^127.0.1.1.*/127.0.1.1 $TARGET_HOSTNAME/" /etc/hosts || true
 }
 
 ############################################################
-# 1. Packages
+# Packages
 ############################################################
 install_packages() {
   log "[1/8] Installing packages"
@@ -148,7 +130,7 @@ install_packages() {
 }
 
 ############################################################
-# 2. Directories
+# Directories
 ############################################################
 prepare_dirs() {
   log "[2/8] Creating directories"
@@ -156,11 +138,22 @@ prepare_dirs() {
 }
 
 ############################################################
-# 3. SDR builds (non-blocking)
+# SDR builds (FIXED)
 ############################################################
 clone_or_update() {
-  local repo="$1" url="$2" dest="$SRC_DIR/$repo"
-  [[ -d "$dest/.git" ]] && git -C "$dest" pull --rebase || git clone "$url" "$dest" || true
+  local repo
+  local url
+  local dest
+
+  repo="$1"
+  url="$2"
+  dest="$SRC_DIR/$repo"
+
+  if [[ -d "$dest/.git" ]]; then
+    git -C "$dest" pull --rebase || true
+  else
+    git clone "$url" "$dest" || true
+  fi
 }
 
 build_dump1090() {
@@ -179,7 +172,7 @@ build_dump978() {
 }
 
 ############################################################
-# 4. Runtime dirs
+# Runtime dirs
 ############################################################
 setup_tmpfiles() {
   log "[5/8] Runtime dirs"
@@ -194,7 +187,7 @@ EOF
 }
 
 ############################################################
-# 5. systemd services
+# systemd services
 ############################################################
 install_services() {
   log "[6/8] Installing systemd units"
@@ -202,11 +195,11 @@ install_services() {
   rsync -a "$SYSTEMD_SRC_DIR/" /etc/systemd/system/
   systemctl daemon-reload
 
-  systemctl enable dump1090-fa dump978-fa nginx
+  systemctl enable nginx dump1090-fa dump978-fa
 }
 
 ############################################################
-# 6. Web UI + nginx
+# Web
 ############################################################
 deploy_web() {
   log "[7/8] Web + nginx"
@@ -215,7 +208,7 @@ deploy_web() {
   chown -R www-data:www-data "$WEB_ROOT"
 
   ensure_php_fpm_running
-  fix_nginx_boot_order
+  fix_nginx_boot
 
   local PHP_SOCK
   PHP_SOCK="$(detect_php_sock)"
@@ -224,7 +217,6 @@ deploy_web() {
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
-
   root $WEB_ROOT;
   index index.php index.html;
 
@@ -264,6 +256,5 @@ deploy_web
 
 log "INSTALL COMPLETE"
 log "Reboot-safe: YES"
-log "Access:"
-log "  http://homebase.local/"
-log "  http://$(hostname -I | awk '{print $1}')"
+log "http://homebase.local/"
+log "http://$(hostname -I | awk '{print $1}')"
