@@ -1,11 +1,14 @@
 [Unit]
 Description=Homebase Hostname + Avahi mDNS Fix
-After=network-online.target systemd-hostnamed.service
 Wants=network-online.target
+After=network-online.target systemd-hostnamed.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
+
 ExecStart=/usr/bin/hostnamectl set-hostname homebase
+ExecStart=/bin/sleep 2
 ExecStart=/bin/systemctl restart avahi-daemon
 
 [Install]
