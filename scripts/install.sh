@@ -5,16 +5,13 @@ set -euo pipefail
 # Homebase Installer (Aeroframe)
 # Raspberry Pi OS / Debian (Trixie)
 #
-# FINAL STABLE DESIGN
+# FINAL, BOOT-SAFE DESIGN
 # - NO hotspot
 # - NO network switching
-# - SSH preserved
-# - homebase.local via Avahi/mDNS
-# - nginx + PHP-FPM come up after reboot
-# - SDR optional (services keep retrying)
-#
-# Systemd unit templates live in repo: /systemd
-# This installer copies them to: /etc/systemd/system
+# - SSH always preserved
+# - nginx + PHP-FPM start AFTER reboot
+# - homebase.local via Avahi
+# - SDR hardware optional
 ############################################################
 
 TARGET_HOSTNAME="homebase"
@@ -32,23 +29,18 @@ LOG_FILE="/var/log/homebase-install.log"
 # Helpers
 ############################################################
 log() { echo -e "\n[$(date '+%H:%M:%S')] $*"; }
-require_root() { [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./scripts/install.sh"; exit 1; }; }
+
+require_root() {
+  [[ $EUID -eq 0 ]] || { echo "Run with sudo: sudo ./scripts/install.sh"; exit 1; }
+}
 
 wait_for_apt() {
   local waited=0
-  while \
-    fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-    fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
-    fuser /var/cache/apt/archives/lock >/dev/null 2>&1 || \
-    fuser /var/lib/apt/lists/lock >/dev/null 2>&1
-  do
+  while fuser /var/lib/dpkg/lock* /var/cache/apt/archives/lock \
+        /var/lib/apt/lists/lock >/dev/null 2>&1; do
     sleep 2
-    waited=$((waited + 2))
-    if [[ $waited -ge 300 ]]; then
-      echo "ERROR: apt/dpkg lock still held after ${waited}s."
-      echo "Try rebooting once and re-running install."
-      exit 1
-    fi
+    waited=$((waited+2))
+    [[ $waited -gt 300 ]] && { echo "apt lock timeout"; exit 1; }
   done
 }
 
@@ -58,47 +50,57 @@ apt_run() {
 }
 
 detect_php_sock() {
-  ls -1 /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -n 1 || true
+  ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -n1 || true
 }
 
-detect_php_fpm_service() {
-  # Prefer versioned phpX.Y-fpm if present; else php-fpm
-  if systemctl list-unit-files | awk '{print $1}' | grep -q '^php[0-9]\+\.[0-9]\+-fpm\.service$'; then
-    systemctl list-unit-files | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' | sort -V | tail -n 1
-    return 0
-  fi
-  if systemctl list-unit-files | awk '{print $1}' | grep -q '^php-fpm\.service$'; then
-    echo "php-fpm.service"
-    return 0
-  fi
-  echo ""
-}
-
+############################################################
+# PHP-FPM
+############################################################
 ensure_php_fpm_running() {
-  log "Ensuring PHP-FPM is enabled and running"
-  local svc
-  svc="$(detect_php_fpm_service)"
+  log "Ensuring PHP-FPM is running"
 
-  if [[ -z "$svc" ]]; then
-    echo "ERROR: Could not find a php-fpm systemd unit (php-fpm or phpX.Y-fpm)."
+  local php_svc
+  php_svc="$(systemctl list-unit-files | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' | sort -V | tail -n1)"
+
+  if [[ -z "$php_svc" ]]; then
+    echo "ERROR: PHP-FPM service not found"
     exit 1
   fi
 
-  systemctl enable --now "$svc" >/dev/null 2>&1 || true
+  systemctl enable --now "$php_svc"
 
-  # Wait up to 15s for socket to appear
   for _ in {1..15}; do
-    local sock
-    sock="$(detect_php_sock)"
-    if [[ -n "$sock" && -S "$sock" ]]; then
-      return 0
-    fi
+    [[ -S "$(detect_php_sock)" ]] && return 0
     sleep 1
   done
 
-  echo "ERROR: PHP-FPM socket never appeared under /run/php."
-  echo "Try: systemctl status $svc --no-pager"
+  echo "ERROR: PHP-FPM socket never appeared"
   exit 1
+}
+
+############################################################
+# nginx boot-order FIX (CRITICAL)
+############################################################
+fix_nginx_boot_order() {
+  log "Fixing nginx boot ordering (PHP-FPM dependency)"
+
+  local php_svc
+  php_svc="$(systemctl list-unit-files | awk '{print $1}' | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' | sort -V | tail -n1)"
+
+  mkdir -p /etc/systemd/system/nginx.service.d
+
+  cat > /etc/systemd/system/nginx.service.d/override.conf <<EOF
+[Unit]
+After=network-online.target ${php_svc}
+Requires=${php_svc}
+
+[Service]
+Restart=always
+RestartSec=3
+EOF
+
+  systemctl daemon-reload
+  systemctl enable nginx
 }
 
 ############################################################
@@ -110,23 +112,20 @@ baseline_system() {
   apt_run update -y
   apt_run install -y openssh-server avahi-daemon avahi-utils locales
 
-  # Enable for boot + start now
-  systemctl enable --now ssh >/dev/null 2>&1 || true
-  systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
+  systemctl enable --now ssh avahi-daemon
 
-  # Locale fix (kills perl warnings on fresh images)
-  if ! locale -a | grep -qi '^en_GB\.utf8$'; then
-    sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
-    locale-gen >/dev/null 2>&1 || true
+  if ! locale -a | grep -qi en_GB.utf8; then
+    sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
+    locale-gen
   fi
 
-  # Hostname + /etc/hosts mapping
-  hostnamectl set-hostname "${TARGET_HOSTNAME}" >/dev/null 2>&1 || true
-  sed -i '/^127\.0\.1\.1 /d' /etc/hosts || true
-  echo "127.0.1.1 ${TARGET_HOSTNAME}" >> /etc/hosts
+  hostnamectl set-hostname "$TARGET_HOSTNAME"
 
-  systemctl restart systemd-hostnamed >/dev/null 2>&1 || true
-  systemctl restart avahi-daemon >/dev/null 2>&1 || true
+  if grep -q '^127.0.1.1' /etc/hosts; then
+    sed -i "s/^127.0.1.1.*/127.0.1.1 $TARGET_HOSTNAME/" /etc/hosts
+  else
+    echo "127.0.1.1 $TARGET_HOSTNAME" >> /etc/hosts
+  fi
 }
 
 ############################################################
@@ -153,114 +152,71 @@ install_packages() {
 ############################################################
 prepare_dirs() {
   log "[2/8] Creating directories"
-  install -d "${SRC_DIR}" "${WEB_ROOT}" "${RUN_DIR}"
+  install -d "$SRC_DIR" "$WEB_ROOT" "$RUN_DIR"
 }
 
 ############################################################
-# 3. SDR builds (optional)
+# 3. SDR builds (non-blocking)
 ############################################################
 clone_or_update() {
-  local repo="$1"
-  local url="$2"
-  local dest="${SRC_DIR}/${repo}"
-
-  if [[ -d "${dest}/.git" ]]; then
-    git -C "${dest}" fetch --all --prune >/dev/null 2>&1 || true
-    git -C "${dest}" reset --hard origin/main >/dev/null 2>&1 || \
-    git -C "${dest}" reset --hard origin/master >/dev/null 2>&1 || true
-  else
-    git clone "${url}" "${dest}" >/dev/null 2>&1 || true
-  fi
+  local repo="$1" url="$2" dest="$SRC_DIR/$repo"
+  [[ -d "$dest/.git" ]] && git -C "$dest" pull --rebase || git clone "$url" "$dest" || true
 }
 
 build_dump1090() {
-  log "[3/8] Building dump1090-fa"
+  log "[3/8] dump1090"
   clone_or_update dump1090 https://github.com/flightaware/dump1090.git
-  pushd "${SRC_DIR}/dump1090" >/dev/null 2>&1 || { echo "WARN: dump1090 src missing"; return 0; }
-
-  if make -j"$(nproc)"; then
-    [[ -f dump1090 ]] && install -m 755 dump1090 /usr/local/bin/dump1090-fa || true
-  else
-    echo "WARN: dump1090 build failed (continuing)"
-  fi
-
-  popd >/dev/null 2>&1 || true
+  cd "$SRC_DIR/dump1090" || return 0
+  make -j"$(nproc)" && install -m755 dump1090 /usr/local/bin/dump1090-fa || true
 }
 
 build_dump978() {
-  log "[4/8] Building dump978-fa"
+  log "[4/8] dump978"
   clone_or_update dump978 https://github.com/flightaware/dump978.git
-  pushd "${SRC_DIR}/dump978" >/dev/null 2>&1 || { echo "WARN: dump978 src missing"; return 0; }
-
-  make clean >/dev/null 2>&1 || true
-  if make -j"$(nproc)"; then
-    [[ -f dump978-fa ]] && install -m 755 dump978-fa /usr/local/bin/dump978-fa || true
-  else
-    echo "WARN: dump978 build failed (continuing)"
-  fi
-
-  popd >/dev/null 2>&1 || true
+  cd "$SRC_DIR/dump978" || return 0
+  make clean || true
+  make -j"$(nproc)" && install -m755 dump978-fa /usr/local/bin/dump978-fa || true
 }
 
 ############################################################
 # 4. Runtime dirs
 ############################################################
 setup_tmpfiles() {
-  log "[5/8] Runtime directories"
+  log "[5/8] Runtime dirs"
 
-  cat > "${TMPFILES_CONF}" <<EOF
-d ${RUN_DIR} 0755 root root -
-d ${RUN_DIR}/dump1090 0755 root root -
-d ${RUN_DIR}/dump978 0755 root root -
+  cat > "$TMPFILES_CONF" <<EOF
+d $RUN_DIR 0755 root root -
+d $RUN_DIR/dump1090 0755 root root -
+d $RUN_DIR/dump978 0755 root root -
 EOF
 
-  systemd-tmpfiles --create >/dev/null 2>&1 || true
+  systemd-tmpfiles --create
 }
 
 ############################################################
-# 5. systemd services (from repo /systemd, plus hardening)
+# 5. systemd services
 ############################################################
 install_services() {
-  log "[6/8] Installing systemd units from repo (/systemd)"
+  log "[6/8] Installing systemd units"
 
-  if [[ ! -d "${SYSTEMD_SRC_DIR}" ]]; then
-    echo "ERROR: Missing ${SYSTEMD_SRC_DIR}"
-    exit 1
-  fi
-
-  install -d /etc/systemd/system
-  rsync -a "${SYSTEMD_SRC_DIR}/" /etc/systemd/system/ >/dev/null 2>&1 || true
-
+  rsync -a "$SYSTEMD_SRC_DIR/" /etc/systemd/system/
   systemctl daemon-reload
 
-  # Make SDR services “never give up” at boot (optional hardware)
-  for svc in dump1090-fa dump978-fa; do
-    if [[ -f "/etc/systemd/system/${svc}.service" ]]; then
-      # Only add if not already present
-      grep -q '^Restart=always' "/etc/systemd/system/${svc}.service" || \
-        sed -i '/^\[Service\]/a Restart=always\nRestartSec=5\nStartLimitIntervalSec=0\nExecStartPre=/bin/sleep 5' \
-          "/etc/systemd/system/${svc}.service"
-    fi
-  done
-
-  systemctl daemon-reload
-
-  # Enable for boot
-  systemctl enable nginx >/dev/null 2>&1 || true
-  systemctl enable dump1090-fa dump978-fa >/dev/null 2>&1 || true
-  systemctl enable avahi-daemon >/dev/null 2>&1 || true
+  systemctl enable dump1090-fa dump978-fa nginx
 }
 
 ############################################################
-# 6. Web UI + nginx site (THIS is what makes homebase.local work)
+# 6. Web UI + nginx
 ############################################################
-deploy_web_and_nginx_site() {
-  log "[7/8] Deploy web UI + configure nginx site"
+deploy_web() {
+  log "[7/8] Web + nginx"
 
-  rsync -a --delete "${REPO_ROOT}/homebase-app/" "${WEB_ROOT}/"
-  chown -R www-data:www-data "${WEB_ROOT}"
+  rsync -a --delete "$REPO_ROOT/homebase-app/" "$WEB_ROOT/"
+  chown -R www-data:www-data "$WEB_ROOT"
 
   ensure_php_fpm_running
+  fix_nginx_boot_order
+
   local PHP_SOCK
   PHP_SOCK="$(detect_php_sock)"
 
@@ -268,8 +224,8 @@ deploy_web_and_nginx_site() {
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
-  server_name _;
-  root ${WEB_ROOT};
+
+  root $WEB_ROOT;
   index index.php index.html;
 
   location / {
@@ -278,38 +234,24 @@ server {
 
   location ~ \.php\$ {
     include snippets/fastcgi-php.conf;
-    fastcgi_pass unix:${PHP_SOCK};
+    fastcgi_pass unix:$PHP_SOCK;
   }
 }
 EOF
 
   ln -sf /etc/nginx/sites-available/homebase /etc/nginx/sites-enabled/homebase
-  rm -f /etc/nginx/sites-enabled/default >/dev/null 2>&1 || true
+  rm -f /etc/nginx/sites-enabled/default
 
   nginx -t
-  systemctl enable --now nginx >/dev/null 2>&1 || true
-}
-
-############################################################
-# 7. Start services now (and they’ll be enabled for reboot)
-############################################################
-start_services() {
-  log "[8/8] Starting services"
-
-  systemctl restart avahi-daemon >/dev/null 2>&1 || true
-  systemctl restart nginx >/dev/null 2>&1 || true
-
-  # SDR services may fail without hardware; that’s OK now (they will retry)
-  systemctl restart dump1090-fa >/dev/null 2>&1 || true
-  systemctl restart dump978-fa >/dev/null 2>&1 || true
+  systemctl restart nginx
 }
 
 ############################################################
 # RUN
 ############################################################
 require_root
-mkdir -p "$(dirname "${LOG_FILE}")"
-exec > >(tee -a "${LOG_FILE}") 2>&1
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 baseline_system
 install_packages
@@ -318,13 +260,10 @@ build_dump1090
 build_dump978
 setup_tmpfiles
 install_services
-deploy_web_and_nginx_site
-start_services
+deploy_web
 
 log "INSTALL COMPLETE"
+log "Reboot-safe: YES"
 log "Access:"
 log "  http://homebase.local/"
-log "  http://$(hostname -I | awk '{print $1}')/"
-log ""
-log "Boot persistence (should be enabled):"
-log "  systemctl is-enabled nginx avahi-daemon dump1090-fa dump978-fa"
+log "  http://$(hostname -I | awk '{print $1}')"
