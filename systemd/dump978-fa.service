@@ -1,15 +1,13 @@
 [Unit]
 Description=Homebase dump978-fa
-After=network-online.target
-Wants=network-online.target
+After=multi-user.target
+Wants=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/dump978-fa \
-  --sdr driver=rtlsdr,index=1 \
-  --json-stdout
+ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
 Restart=always
-RestartSec=3
+RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

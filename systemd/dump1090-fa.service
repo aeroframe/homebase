@@ -1,16 +1,13 @@
 [Unit]
 Description=Homebase dump1090-fa
-After=network-online.target
-Wants=network-online.target
+After=multi-user.target
+Wants=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/dump1090-fa \
-  --net \
-  --write-json /run/homebase/dump1090 \
-  --write-json-every 1
+ExecStart=/usr/local/bin/dump1090-fa --net --write-json /run/homebase/dump1090
 Restart=always
-RestartSec=3
+RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
