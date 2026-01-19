@@ -6,65 +6,8 @@ if (isset($_SESSION['user'])) {
 	exit;
 }
 
-$error = null;
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-	$email = trim($_POST['email'] ?? '');
-	$password = $_POST['password'] ?? '';
-
-	if ($email !== '' && $password !== '') {
-
-		$ch = curl_init('https://aerofra.me/login_submit.php');
-
-		curl_setopt_array($ch, [
-			CURLOPT_POST => true,
-			CURLOPT_POSTFIELDS => http_build_query([
-				// 🔑 CRITICAL FIX:
-				// login_submit.php expects THESE names
-				'username' => $email,
-				'password' => $password
-			]),
-			CURLOPT_RETURNTRANSFER => true,
-			CURLOPT_HEADER => true,
-			CURLOPT_FOLLOWLOCATION => false,
-			CURLOPT_TIMEOUT => 10
-		]);
-
-		$response = curl_exec($ch);
-		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-		curl_close($ch);
-
-		// Successful login on Aeroframe = redirect
-		if ($httpCode === 302) {
-
-			// Fetch user profile (same as real app)
-			$ch = curl_init('https://aerofra.me/api/auth/user.php');
-			curl_setopt_array($ch, [
-				CURLOPT_RETURNTRANSFER => true,
-				CURLOPT_TIMEOUT => 5
-			]);
-			$userJson = curl_exec($ch);
-			curl_close($ch);
-
-			$user = json_decode($userJson, true);
-
-			if (
-				isset($user['account_type']) &&
-				in_array($user['account_type'], ['LineTech', 'LineOps'], true)
-			) {
-				$_SESSION['user'] = $user;
-				header('Location: /');
-				exit;
-			}
-
-			$error = 'unauthorized';
-		} else {
-			$error = 'invalid';
-		}
-	} else {
-		$error = 'invalid';
-	}
-}
+$error = $_GET['error'] ?? null;
+$return = urlencode('https://homebase.local/session.php');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -96,8 +39,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 		<div class="error">Your account does not have access to Homebase.</div>
 	<?php endif; ?>
 
-	<form method="POST">
-		<input type="email" name="email" placeholder="Email" required>
+	<!-- 🚀 THIS IS THE FIX -->
+	<form method="POST" action="https://aerofra.me/login_submit.php">
+		<input type="hidden" name="redirect" value="<?= $return ?>">
+		<input type="email" name="username" placeholder="Email" required>
 		<input type="password" name="password" placeholder="Password" required>
 		<button type="submit">Sign In</button>
 	</form>

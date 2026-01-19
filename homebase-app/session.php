@@ -1,17 +1,24 @@
 <?php
 session_start();
 
-$data = json_decode(file_get_contents("php://input"), true);
+$ch = curl_init('https://aerofra.me/api/auth/user.php');
+curl_setopt_array($ch, [
+	CURLOPT_RETURNTRANSFER => true,
+	CURLOPT_TIMEOUT => 5
+]);
+$response = curl_exec($ch);
+curl_close($ch);
 
-if (!$data || !isset($data['account_type'])) {
-	http_response_code(400);
+$user = json_decode($response, true);
+
+if (
+	isset($user['account_type']) &&
+	in_array($user['account_type'], ['LineTech', 'LineOps'], true)
+) {
+	$_SESSION['user'] = $user;
+	header('Location: /');
 	exit;
 }
 
-$_SESSION['user'] = [
-	'id'           => $data['id'] ?? null,
-	'email'        => $data['email'],
-	'account_type' => $data['account_type']
-];
-
-echo json_encode(['ok' => true]);
+header('Location: /login.php?error=unauthorized');
+exit;
