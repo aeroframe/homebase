@@ -6,12 +6,12 @@ set -euo pipefail
 # Raspberry Pi OS / Debian (Trixie)
 #
 # FINAL DESIGN:
-# - No hotspot
-# - No network switching
-# - SSH always available
-# - homebase.local via Avahi
+# - NO hotspot
+# - NO network switching
+# - SSH always works
 # - Services persist across reboot
-# - SDR hardware optional
+# - homebase.local via Avahi
+# - SDR optional (non-blocking)
 ############################################################
 
 TARGET_HOSTNAME="homebase"
@@ -45,7 +45,7 @@ wait_for_apt() {
     sleep 2
     waited=$((waited + 2))
     [[ $waited -ge 300 ]] && {
-      echo "ERROR: apt lock held too long. Reboot and retry."
+      echo "ERROR: apt lock stuck. Reboot and retry."
       exit 1
     }
   done
@@ -60,24 +60,8 @@ detect_php_sock() {
   ls -1 /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -n 1 || true
 }
 
-ensure_php_fpm_running() {
-  log "Ensuring PHP-FPM is running"
-
-  if systemctl list-unit-files | grep -q '^php-fpm\.service'; then
-    systemctl enable --now php-fpm >/dev/null 2>&1 || true
-  else
-    local svc
-    svc="$(systemctl list-unit-files | awk '{print $1}' \
-      | grep -E '^php[0-9]+\.[0-9]+-fpm\.service$' \
-      | sort -V | tail -n 1 || true)"
-    [[ -n "$svc" ]] && systemctl enable --now "$svc" >/dev/null 2>&1 || true
-  fi
-
-  sleep 2
-}
-
 ############################################################
-# 0. Baseline system
+# 0. Baseline
 ############################################################
 baseline_system() {
   log "[0/7] Baseline system"
@@ -85,22 +69,21 @@ baseline_system() {
   apt_run update -y
   apt_run install -y openssh-server avahi-daemon avahi-utils locales
 
-  systemctl enable --now ssh >/dev/null 2>&1 || true
+  systemctl enable --now ssh avahi-daemon
 
+  # Locale fix
   if ! locale -a | grep -qi '^en_GB\.utf8$'; then
-    sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen || true
-    locale-gen || true
+    sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen
+    locale-gen
   fi
 
-  hostnamectl set-hostname "$TARGET_HOSTNAME" >/dev/null 2>&1 || true
+  hostnamectl set-hostname "$TARGET_HOSTNAME"
 
   if grep -q '^127.0.1.1' /etc/hosts; then
     sed -i "s/^127.0.1.1.*/127.0.1.1 ${TARGET_HOSTNAME}/" /etc/hosts
   else
     echo "127.0.1.1 ${TARGET_HOSTNAME}" >> /etc/hosts
   fi
-
-  systemctl restart systemd-hostnamed avahi-daemon >/dev/null 2>&1 || true
 }
 
 ############################################################
@@ -131,35 +114,27 @@ prepare_dirs() {
 }
 
 ############################################################
-# 3. SDR builds (safe)
+# 3. SDR builds (NON-BLOCKING)
 ############################################################
 clone_or_update() {
-  local repo="$1" url="$2" dest="${SRC_DIR}/${repo}"
-
-  if [[ -d "$dest/.git" ]]; then
-    git -C "$dest" fetch --all --prune >/dev/null 2>&1 || true
-    git -C "$dest" reset --hard origin/main >/dev/null 2>&1 || \
-    git -C "$dest" reset --hard origin/master >/dev/null 2>&1 || true
-  else
-    git clone "$url" "$dest" >/dev/null 2>&1 || true
-  fi
+  local repo="$1" url="$2" dest="$SRC_DIR/$repo"
+  [[ -d "$dest/.git" ]] && \
+    git -C "$dest" reset --hard origin/main || git clone "$url" "$dest" || true
 }
 
 build_dump1090() {
-  log "[3/7] Building dump1090-fa"
+  log "[3/7] dump1090-fa"
   clone_or_update dump1090 https://github.com/flightaware/dump1090.git
-  pushd "$SRC_DIR/dump1090" >/dev/null || return 0
-  make -j"$(nproc)" && install -m755 dump1090 /usr/local/bin/dump1090-fa || true
-  popd >/dev/null || true
+  make -C "$SRC_DIR/dump1090" -j$(nproc) && \
+    install -m755 "$SRC_DIR/dump1090/dump1090" /usr/local/bin/dump1090-fa || true
 }
 
 build_dump978() {
-  log "[4/7] Building dump978-fa"
+  log "[4/7] dump978-fa"
   clone_or_update dump978 https://github.com/flightaware/dump978.git
-  pushd "$SRC_DIR/dump978" >/dev/null || return 0
-  make clean >/dev/null 2>&1 || true
-  make -j"$(nproc)" && install -m755 dump978-fa /usr/local/bin/dump978-fa || true
-  popd >/dev/null || true
+  make -C "$SRC_DIR/dump978" clean || true
+  make -C "$SRC_DIR/dump978" -j$(nproc) && \
+    install -m755 "$SRC_DIR/dump978/dump978-fa" /usr/local/bin/dump978-fa || true
 }
 
 ############################################################
@@ -167,51 +142,60 @@ build_dump978() {
 ############################################################
 setup_tmpfiles() {
   log "[5/7] Runtime directories"
-
   cat > "$TMPFILES_CONF" <<EOF
 d $RUN_DIR 0755 root root -
 d $RUN_DIR/dump1090 0755 root root -
 d $RUN_DIR/dump978 0755 root root -
 EOF
-
-  systemd-tmpfiles --create >/dev/null 2>&1 || true
+  systemd-tmpfiles --create
 }
 
 ############################################################
-# 5. systemd services (from repo)
+# 5. systemd services (BOOT FIX)
 ############################################################
 install_services() {
-  log "[6/7] Installing systemd services"
+  log "[6/7] Installing & enabling services"
 
-  [[ -d "$SYSTEMD_SRC_DIR" ]] || {
-    echo "ERROR: Missing /systemd directory in repo"
-    exit 1
-  }
-
-  rsync -a "$SYSTEMD_SRC_DIR/" /etc/systemd/system/ \
-    --include='*.service' --exclude='*'
+  install -d /etc/systemd/system
+  rsync -a "$SYSTEMD_SRC_DIR/" /etc/systemd/system/ --include='*.service' --exclude='*'
 
   systemctl daemon-reload
-  systemctl enable dump1090-fa dump978-fa nginx avahi-daemon ssh >/dev/null 2>&1 || true
+
+  # CORE SERVICES
+  systemctl enable ssh avahi-daemon nginx
+
+  # PHP-FPM (version safe)
+  if systemctl list-unit-files | grep -q '^php-fpm\.service'; then
+    systemctl enable php-fpm
+  else
+    PHP_SVC=$(systemctl list-unit-files | grep -E '^php[0-9]+\.[0-9]+-fpm\.service' | sort -V | tail -n1 || true)
+    [[ -n "$PHP_SVC" ]] && systemctl enable "$PHP_SVC"
+  fi
+
+  # SDR SERVICES (NON-BLOCKING)
+  systemctl enable dump1090-fa dump978-fa || true
+
+  # START NOW (mirrors boot behavior)
+  systemctl start ssh avahi-daemon nginx
+  systemctl start dump1090-fa dump978-fa || true
 }
 
 ############################################################
-# 6. Web UI + nginx
+# 6. Web UI
 ############################################################
 deploy_web() {
-  log "[7/7] Deploying web UI"
+  log "[7/7] Deploy web UI"
 
   rsync -a --delete "$REPO_ROOT/homebase-app/" "$WEB_ROOT/"
   chown -R www-data:www-data "$WEB_ROOT"
 
-  ensure_php_fpm_running
   PHP_SOCK="$(detect_php_sock)"
+  [[ -z "$PHP_SOCK" ]] && { echo "PHP-FPM socket missing"; exit 1; }
 
   cat > /etc/nginx/sites-available/homebase <<EOF
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
-  server_name _;
   root $WEB_ROOT;
   index index.php index.html;
 
@@ -227,11 +211,10 @@ server {
 EOF
 
   ln -sf /etc/nginx/sites-available/homebase /etc/nginx/sites-enabled/homebase
-  rm -f /etc/nginx/sites-enabled/default || true
+  rm -f /etc/nginx/sites-enabled/default
 
   nginx -t
-  systemctl restart nginx >/dev/null 2>&1 || true
-  systemctl restart dump1090-fa dump978-fa >/dev/null 2>&1 || true
+  systemctl restart nginx
 }
 
 ############################################################
@@ -251,6 +234,6 @@ install_services
 deploy_web
 
 log "DONE"
-log "Homebase available at:"
+log "Homebase ready after reboot at:"
 log "  http://homebase.local/"
 log "  http://$(hostname -I | awk '{print $1}')/"
