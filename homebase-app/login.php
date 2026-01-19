@@ -64,7 +64,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
 
 	try {
 		/* Step 1: Authenticate via local Homebase proxy */
-		const res = await fetch('/api/auth/login.php', {
+		const res = await fetch('http://aerofra.me/api/auth/login.php', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ email, password })
