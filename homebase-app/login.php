@@ -1,21 +1,23 @@
 <?php
 session_start();
 
-/**
- * Generate a stable Homebase device ID
- * - No files
- * - No install dependency
- * - Stable across reboots
- */
-function get_device_id(): string {
-	$hostname = gethostname() ?: 'homebase';
-	$machineId = @file_get_contents('/etc/machine-id') ?: uniqid();
-	$hash = substr(hash('sha256', $hostname . $machineId), 0, 12);
-	return 'HB-' . $hash;
+if (isset($_SESSION['user'])) {
+	header('Location: /');
+	exit;
 }
 
+// Stable per-device ID
+$hostname  = gethostname() ?: 'homebase';
+$device_id = 'HB-' . substr(hash('sha256', $hostname), 0, 12);
+
+// Callback URL
 $return = 'http://homebase.local/auth/callback.php';
-$device_id = get_device_id();
+
+// Build auth URL safely
+$auth_url = 'https://aerofra.me/auth/?' . http_build_query([
+	'return'    => $return,
+	'device_id' => $device_id
+]);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -28,7 +30,7 @@ $device_id = get_device_id();
 <body>
 
 <div class="login-card">
-	<img src="/assets/logo.svg" class="logo" alt="Homebase">
+	<img src="/assets/logo.svg" class="logo">
 
 	<h1>Homebase</h1>
 	<p class="subtitle">
@@ -36,17 +38,12 @@ $device_id = get_device_id();
 		powered by Aeroframe
 	</p>
 
-	<div class="context-box">
-		You are signing into a <strong>Homebase receiver</strong>.<br>
-		Access is limited to <strong>LineTech</strong> and <strong>LineOps</strong> accounts.
-	</div>
-
-	<a class="btn primary" href="https://aerofra.me/auth/?return=<?= urlencode($return) ?>&device_id=<?= urlencode($device_id) ?>">
-	Login with Aeroframe Cloud
+	<a class="btn-primary" href="<?= htmlspecialchars($auth_url) ?>">
+		Sign in with Aeroframe Cloud
 	</a>
 
-	<p class="device-id">
-		Device: <?= htmlspecialchars($device_id) ?>
+	<p class="muted">
+		Device ID: <?= htmlspecialchars($device_id) ?>
 	</p>
 </div>
 
