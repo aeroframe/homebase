@@ -1,0 +1,11 @@
+[Unit]
+Description=Homebase Avahi mDNS Fix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart avahi-daemon
+
+[Install]
+WantedBy=multi-user.target
