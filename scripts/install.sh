@@ -5,20 +5,22 @@ set -euo pipefail
 # Homebase Installer (Aeroframe)
 # Raspberry Pi OS / Debian Trixie
 #
-# Design goals:
-# - Appliance-style
-# - SSH never breaks
-# - Network mode chosen ONLY at boot
-# - Hotspot isolated from Ethernet
+# GUARANTEES:
+# - SSH NEVER breaks
+# - Network mode decided ONLY at boot
+# - Hotspot isolated to wlan0
+# - Ethernet always safe
 ############################################################
 
 TARGET_HOSTNAME="homebase"
 
-# HOTSPOT NETWORK (CHANGED to avoid conflicts)
+# Hotspot network (NON-CONFLICTING)
+HOTSPOT_IF="wlan0"
 HOTSPOT_IP="10.43.0.1"
-HOTSPOT_NETMASK="/24"
+HOTSPOT_CIDR="10.43.0.1/24"
 HOTSPOT_SSID="Homebase"
 HOTSPOT_PASS="homebase1234"
+HOTSPOT_COUNTRY="US"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="/opt/homebase/src"
@@ -32,10 +34,7 @@ BOOT_FLAG="/boot/firmware/homebase-hotspot"
 # Helpers
 ############################################################
 log() { echo -e "\n[$(date '+%H:%M:%S')] $*"; }
-
-require_root() {
-  [[ $EUID -eq 0 ]] || { echo "Run with sudo"; exit 1; }
-}
+require_root() { [[ $EUID -eq 0 ]] || { echo "Run with sudo"; exit 1; }; }
 
 wait_for_apt() {
   while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
@@ -62,17 +61,13 @@ baseline() {
 
   systemctl enable --now ssh
 
-  # Locale fix
   sed -i 's/^# *en_GB.UTF-8 UTF-8/en_GB.UTF-8 UTF-8/' /etc/locale.gen || true
   locale-gen || true
 
   hostnamectl set-hostname "$TARGET_HOSTNAME"
 
-  if grep -q "^127.0.1.1" /etc/hosts; then
-    sed -i "s/^127.0.1.1.*/127.0.1.1 ${TARGET_HOSTNAME}/" /etc/hosts
-  else
-    echo "127.0.1.1 ${TARGET_HOSTNAME}" >> /etc/hosts
-  fi
+  sed -i "s/^127.0.1.1.*/127.0.1.1 ${TARGET_HOSTNAME}/" /etc/hosts \
+    || echo "127.0.1.1 ${TARGET_HOSTNAME}" >> /etc/hosts
 
   systemctl restart systemd-hostnamed avahi-daemon
 }
@@ -82,7 +77,7 @@ baseline() {
 ############################################################
 git_safety() {
   log "[1/10] Git safety"
-  git config --global --add safe.directory /opt/homebase || true
+  git config --system --add safe.directory /opt/homebase || true
 }
 
 ############################################################
@@ -103,7 +98,9 @@ packages() {
     libsoapysdr-dev soapysdr-tools \
     soapysdr0.8-module-rtlsdr soapysdr0.8-module-all
 
-  systemctl unmask hostapd || true
+  # IMPORTANT: do NOT let these auto-start
+  systemctl disable dnsmasq hostapd || true
+  systemctl mask dnsmasq hostapd || true
 }
 
 ############################################################
@@ -123,7 +120,7 @@ clone_or_update() {
 }
 
 build_sdr() {
-  log "[4/10] Building SDR tools"
+  log "[4/10] SDR builds"
 
   clone_or_update dump1090 https://github.com/flightaware/dump1090.git
   make -C "$SRC_DIR/dump1090" -j$(nproc)
@@ -151,7 +148,7 @@ EOF
 }
 
 ############################################################
-# 6. Hotspot config (NO SWITCH)
+# 6. Hotspot configs (INSTALLED ONLY)
 ############################################################
 hotspot_configs() {
   log "[6/10] Hotspot configs"
@@ -159,10 +156,15 @@ hotspot_configs() {
   mkdir -p /etc/hostapd
 
   cat > /etc/hostapd/hostapd.conf <<EOF
-interface=wlan0
+country_code=$HOTSPOT_COUNTRY
+interface=$HOTSPOT_IF
+driver=nl80211
 ssid=$HOTSPOT_SSID
 hw_mode=g
 channel=6
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
 wpa=2
 wpa_passphrase=$HOTSPOT_PASS
 wpa_key_mgmt=WPA-PSK
@@ -170,62 +172,59 @@ rsn_pairwise=CCMP
 EOF
 
   cat > /etc/dnsmasq.d/homebase.conf <<EOF
-interface=wlan0
+interface=$HOTSPOT_IF
 dhcp-range=10.43.0.20,10.43.0.200,255.255.255.0,24h
 address=/homebase.local/$HOTSPOT_IP
 EOF
-
-  cat > /etc/default/hostapd <<EOF
-DAEMON_CONF="/etc/hostapd/hostapd.conf"
-EOF
-
-  systemctl enable dnsmasq hostapd
 }
 
 ############################################################
-# 7. Services
+# 7. Network selector (BOOT ONLY)
 ############################################################
-services() {
-  log "[7/10] systemd services"
+network_selector() {
+  log "[7/10] Network selector"
 
-  cat > /etc/systemd/system/dump1090-fa.service <<EOF
-[Service]
-ExecStart=/usr/local/bin/dump1090-fa --net --write-json $RUN_DIR/dump1090
-Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
+  cat > /usr/local/sbin/homebase-net-select <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
-  cat > /etc/systemd/system/dump978-fa.service <<EOF
-[Service]
-ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
-Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
+FLAG="/boot/firmware/homebase-hotspot"
 
-  cat > /usr/local/sbin/homebase-net-select <<EOF
-#!/bin/bash
-if [[ -f "$BOOT_FLAG" ]]; then
-  ip addr add $HOTSPOT_IP$HOTSPOT_NETMASK dev wlan0
-  ip link set wlan0 up
-  systemctl start dnsmasq hostapd
+if [[ ! -f "$FLAG" ]]; then
+  exit 0
 fi
+
+# Kill any wifi manager
+systemctl stop NetworkManager 2>/dev/null || true
+systemctl stop wpa_supplicant 2>/dev/null || true
+
+ip link set wlan0 down || true
+ip addr flush dev wlan0 || true
+ip addr add 10.43.0.1/24 dev wlan0
+ip link set wlan0 up
+
+systemctl unmask dnsmasq hostapd
+systemctl start dnsmasq
+systemctl start hostapd
 EOF
+
   chmod +x /usr/local/sbin/homebase-net-select
 
   cat > /etc/systemd/system/homebase-net-select.service <<EOF
 [Unit]
-Before=network-pre.target
+Description=Homebase Network Selector
+After=network.target
+
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/homebase-net-select
+
 [Install]
 WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable dump1090-fa dump978-fa homebase-net-select
+  systemctl enable homebase-net-select
 }
 
 ############################################################
@@ -244,6 +243,7 @@ server {
   listen 80 default_server;
   root $WEB_ROOT;
   index index.php;
+
   location / { try_files \$uri /index.php; }
   location ~ \.php\$ {
     include snippets/fastcgi-php.conf;
@@ -263,9 +263,11 @@ EOF
 ############################################################
 self_test() {
   log "[9/10] Self-test"
-  echo "SSH OK: $(systemctl is-active ssh)"
+
+  echo "SSH: $(systemctl is-active ssh)"
   echo "Web: http://homebase.local"
-  echo "Hotspot enable:"
+  echo
+  echo "Enable hotspot on next boot:"
   echo "  sudo touch $BOOT_FLAG && sudo reboot"
 }
 
@@ -280,6 +282,6 @@ dirs
 build_sdr
 runtime_dirs
 hotspot_configs
-services
+network_selector
 web
 self_test
