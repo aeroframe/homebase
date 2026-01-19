@@ -1,13 +1,16 @@
 [Unit]
 Description=Homebase dump978-fa
-After=multi-user.target
-Wants=network.target
+After=network-online.target systemd-udev-settle.service
+Wants=network-online.target
 
 [Service]
+Type=simple
 ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
 Restart=always
-RestartSec=5
+RestartSec=10
 StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

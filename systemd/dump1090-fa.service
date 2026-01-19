@@ -1,13 +1,16 @@
 [Unit]
 Description=Homebase dump1090-fa
-After=multi-user.target
-Wants=network.target
+After=network-online.target systemd-udev-settle.service
+Wants=network-online.target
 
 [Service]
+Type=simple
 ExecStart=/usr/local/bin/dump1090-fa --net --write-json /run/homebase/dump1090
 Restart=always
-RestartSec=5
+RestartSec=10
 StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
