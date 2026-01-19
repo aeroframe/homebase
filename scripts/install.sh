@@ -1,54 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ========================================
+# ----------------------------------------
 # Homebase Installer (Aeroframe)
 # Raspberry Pi OS / Debian Trixie / 64-bit
-# ========================================
+# ----------------------------------------
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="/opt/homebase/src"
 WEB_ROOT="/var/www/homebase"
 RUN_DIR="/run/homebase"
 TMPFILES_CONF="/etc/tmpfiles.d/homebase.conf"
-HOSTNAME="homebase"
 
+# ---------------------------
+# Helpers
+# ---------------------------
 log() {
   echo -e "\n[$(date '+%H:%M:%S')] $*"
 }
 
+main_banner() {
+  echo "======================================"
+  echo " Homebase Installer (Aeroframe)"
+  echo " Raspberry Pi / Debian"
+  echo "======================================"
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    echo "Please run with sudo: sudo ./scripts/install.sh"
+    echo "Please run with sudo:"
+    echo "  sudo ./scripts/install.sh"
     exit 1
   fi
 }
 
-# ---------------------------
-# APT LOCK SAFETY (CRITICAL)
-# ---------------------------
-wait_for_apt() {
-  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo "[install] Waiting for apt lock..."
-    sleep 3
-  done
+detect_php_sock() {
+  ls -1 /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -n 1 || true
 }
 
 # ---------------------------
 # Git safety
 # ---------------------------
 fix_repo_ownership() {
-  log "Trust repo ownership (avoids dubious ownership)"
+  log "Trust repo ownership"
   git config --global --add safe.directory /opt/homebase || true
   git config --global --add safe.directory "${REPO_ROOT}" || true
 }
 
 # ---------------------------
-# SSH SAFETY (NEVER BREAK)
+# SSH SAFETY (critical)
 # ---------------------------
 ensure_ssh() {
   log "Ensure SSH access (critical)"
-  wait_for_apt
   apt-get update -y
   apt-get install -y openssh-server
   systemctl enable ssh
@@ -56,43 +59,28 @@ ensure_ssh() {
 }
 
 # ---------------------------
-# Hostname + mDNS
-# ---------------------------
-setup_mdns() {
-  log "Configure hostname + mDNS (${HOSTNAME}.local)"
-  wait_for_apt
-  apt-get install -y avahi-daemon avahi-utils
-
-  hostnamectl set-hostname "${HOSTNAME}"
-
-  systemctl enable avahi-daemon
-  systemctl restart avahi-daemon
-}
-
-# ---------------------------
 # Packages
 # ---------------------------
 install_packages() {
   log "[1/9] System update"
-  wait_for_apt
   apt-get update -y
   apt-get upgrade -y
 
   log "[2/9] Base packages"
-  wait_for_apt
   apt-get install -y \
     git curl ca-certificates rsync \
     nginx php-fpm \
-    python3 python3-pip \
     dnsmasq hostapd rfkill \
+    python3 python3-pip \
     build-essential cmake pkg-config \
-    librtlsdr-dev libusb-1.0-0-dev libncurses-dev libboost-all-dev
+    librtlsdr-dev libusb-1.0-0-dev libncurses-dev libboost-all-dev \
+    avahi-daemon avahi-utils
 
   log "[3/9] SoapySDR"
-  wait_for_apt
   apt-get install -y \
     libsoapysdr-dev soapysdr-tools \
-    soapysdr0.8-module-rtlsdr soapysdr0.8-module-all || true
+    soapysdr0.8-module-rtlsdr \
+    soapysdr0.8-module-all || true
 }
 
 # ---------------------------
@@ -115,7 +103,7 @@ clone_or_update() {
   if [[ -d "${dest}/.git" ]]; then
     log "Updating ${name}"
     git -C "${dest}" fetch --all --prune
-    git -C "${dest}" reset --hard origin/main || \
+    git -C "${dest}" reset --hard origin/main 2>/dev/null || \
     git -C "${dest}" reset --hard origin/master
   else
     log "Cloning ${name}"
@@ -124,7 +112,7 @@ clone_or_update() {
 }
 
 # ---------------------------
-# Build dump1090-fa
+# dump1090-fa
 # ---------------------------
 build_dump1090() {
   log "[5/9] Build dump1090-fa"
@@ -136,7 +124,7 @@ build_dump1090() {
 }
 
 # ---------------------------
-# Build dump978-fa
+# dump978-fa
 # ---------------------------
 build_dump978() {
   log "[6/9] Build dump978-fa"
@@ -162,14 +150,10 @@ EOF
 }
 
 # ---------------------------
-# Systemd services
+# systemd services
 # ---------------------------
 install_systemd_units() {
   log "Install systemd services"
-
-  install -m 644 "${REPO_ROOT}/systemd/homebase-normal.service" /etc/systemd/system/
-  install -m 644 "${REPO_ROOT}/systemd/homebase-hotspot.service" /etc/systemd/system/
-  install -m 644 "${REPO_ROOT}/systemd/homebase-boot.service" /etc/systemd/system/
 
   cat > /etc/systemd/system/dump1090-fa.service <<'EOF'
 [Unit]
@@ -200,7 +184,7 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable dump1090-fa dump978-fa homebase-boot
+  systemctl enable dump1090-fa dump978-fa
   systemctl restart dump1090-fa dump978-fa || true
 }
 
@@ -208,7 +192,8 @@ EOF
 # Web UI
 # ---------------------------
 deploy_web_app() {
-  log "Deploy web UI"
+  log "[8/9] Deploy web UI"
+
   rsync -a --delete "${REPO_ROOT}/homebase-app/" "${WEB_ROOT}/"
 
   install -d "${WEB_ROOT}/feeds"
@@ -217,18 +202,21 @@ deploy_web_app() {
 <?php
 header('Content-Type: application/json');
 
-echo json_encode([
+$out = [
   'generated_at' => gmdate('c'),
   'dump1090' => @json_decode(@file_get_contents('/run/homebase/dump1090/aircraft.json'), true),
   'dump978'  => @json_decode(@file_get_contents('/run/homebase/dump978/latest.json'), true),
-]);
+];
+
+echo json_encode($out);
 EOF
 }
 
 install_nginx_site() {
   log "Configure nginx"
 
-  PHP_SOCK="$(ls -1 /run/php/php*-fpm.sock | sort -V | tail -n 1)"
+  local php_sock
+  php_sock="$(detect_php_sock)"
 
   cat > /etc/nginx/sites-available/homebase <<EOF
 server {
@@ -242,7 +230,7 @@ server {
 
   location ~ \.php\$ {
     include snippets/fastcgi-php.conf;
-    fastcgi_pass unix:${PHP_SOCK};
+    fastcgi_pass unix:${php_sock};
   }
 }
 EOF
@@ -261,11 +249,9 @@ self_test() {
   log "[9/9] Self-test"
 
   command -v dump1090-fa >/dev/null && echo "✔ dump1090-fa"
-  command -v dump978-fa >/dev/null && echo "✔ dump978-fa"
-  systemctl is-active ssh >/dev/null && echo "✔ SSH active"
-  systemctl is-active nginx >/dev/null && echo "✔ nginx active"
-  systemctl is-enabled dump1090-fa >/dev/null && echo "✔ dump1090 enabled"
-  systemctl is-enabled dump978-fa >/dev/null && echo "✔ dump978 enabled"
+  command -v dump978-fa  >/dev/null && echo "✔ dump978-fa"
+  systemctl is-active nginx >/dev/null && echo "✔ nginx"
+  systemctl is-active ssh   >/dev/null && echo "✔ ssh"
 
   echo
   echo "Homebase ready:"
@@ -274,13 +260,12 @@ self_test() {
 }
 
 # ---------------------------
-# Run
+# RUN
 # ---------------------------
 require_root
 main_banner
 fix_repo_ownership
 ensure_ssh
-setup_mdns
 install_packages
 prepare_dirs
 build_dump1090
