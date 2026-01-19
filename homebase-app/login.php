@@ -41,11 +41,8 @@ $device_id = get_device_id();
 		Access is limited to <strong>LineTech</strong> and <strong>LineOps</strong> accounts.
 	</div>
 
-	<a class="btn primary"
-	   href="https://aerofra.me/auth/
-		 ?return=<?= urlencode($return) ?>
-		 &device_id=<?= urlencode($device_id) ?>">
-		Login with Aeroframe Cloud
+	<a class="btn primary" href="https://aerofra.me/auth/?return=<?= urlencode($return) ?>&device_id=<?= urlencode($device_id) ?>">
+	Login with Aeroframe Cloud
 	</a>
 
 	<p class="device-id">
