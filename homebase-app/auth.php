@@ -1,87 +1,118 @@
 <?php
 /**
- * Homebase authentication helper
- * --------------------------------
- * - Validates Aeroframe-issued auth token
- * - Establishes Homebase session
+ * Homebase Authentication Helper
+ * ===============================
+ * Handles:
+ *  - Login enforcement
+ *  - Aeroframe Cloud callback validation
+ *  - Homebase session establishment
  */
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
-  session_start();
+    session_start();
 }
 
 /**
- * Configuration
+ * ============================================================
+ * CONFIGURATION
+ * ============================================================
+ * TEMPORARY inline secret
+ * Move to env var later if desired
  */
-$HOMEBASE_SECRET = getenv('HOMEBASE_AUTH_SECRET');
+$HOMEBASE_AUTH_SECRET = 'c6da003ff39556572305e4e8c2796c0e2e109b3cddae547194ceb57ddd7ee960';
 
-if (!$HOMEBASE_SECRET) {
-  http_response_code(500);
-  die('Homebase misconfigured: missing HOMEBASE_AUTH_SECRET');
+if (!$HOMEBASE_AUTH_SECRET) {
+    http_response_code(500);
+    die('Homebase misconfigured: missing HOMEBASE_AUTH_SECRET');
 }
 
 /**
- * Require user to be logged in
+ * ============================================================
+ * REQUIRE LOGIN
+ * ============================================================
  */
 function require_login(): void
 {
-  if (!isset($_SESSION['user'])) {
-    header('Location: /login.php');
-    exit;
-  }
+    if (
+        empty($_SESSION['user']) ||
+        empty($_SESSION['user']['authenticated'])
+    ) {
+        header('Location: /login.php');
+        exit;
+    }
 }
 
 /**
- * Handle callback from Aeroframe Cloud
- * /auth/callback.php includes this file
+ * ============================================================
+ * HANDLE AEROFAME CALLBACK
+ * ============================================================
+ * Used by /auth/callback.php
  */
 function handle_callback(): void
 {
-  global $HOMEBASE_SECRET;
+    global $HOMEBASE_AUTH_SECRET;
 
-  $token = $_GET['token'] ?? '';
-  $sig   = $_GET['sig'] ?? '';
+    $token = $_GET['token'] ?? '';
+    $sig   = $_GET['sig'] ?? '';
 
-  if (!$token || !$sig) {
-    http_response_code(403);
-    die('Missing authentication token.');
-  }
+    if (!$token || !$sig) {
+        http_response_code(403);
+        die('Missing authentication token.');
+    }
 
-  // Verify signature
-  $expectedSig = hash_hmac('sha256', $token, $HOMEBASE_SECRET);
-  if (!hash_equals($expectedSig, $sig)) {
-    http_response_code(403);
-    die('Invalid authentication signature.');
-  }
+    /**
+     * Verify signature
+     */
+    $expectedSig = hash_hmac('sha256', $token, $HOMEBASE_AUTH_SECRET);
+    if (!hash_equals($expectedSig, $sig)) {
+        http_response_code(403);
+        die('Invalid authentication signature.');
+    }
 
-  // Decode token
-  $payload = json_decode(base64_decode($token), true);
-  if (!$payload || !is_array($payload)) {
-    http_response_code(403);
-    die('Invalid authentication payload.');
-  }
+    /**
+     * Decode token payload
+     */
+    $payload = json_decode(base64_decode($token), true);
+    if (!$payload || !is_array($payload)) {
+        http_response_code(403);
+        die('Invalid authentication payload.');
+    }
 
-  // Expiration check
-  if (empty($payload['exp']) || time() > $payload['exp']) {
-    http_response_code(403);
-    die('Authentication token expired.');
-  }
+    /**
+     * Expiration check
+     */
+    if (empty($payload['exp']) || time() > $payload['exp']) {
+        http_response_code(403);
+        die('Authentication token expired.');
+    }
 
-  // Account type enforcement
-  $accountType = strtolower($payload['account_type'] ?? '');
-  if (!in_array($accountType, ['linetech', 'lineops'], true)) {
-    http_response_code(403);
-    die('Account not authorized for Homebase.');
-  }
+    /**
+     * Account enforcement
+     */
+    $accountType = strtolower($payload['account_type'] ?? '');
+    if (!in_array($accountType, ['linetech', 'lineops'], true)) {
+        http_response_code(403);
+        die('Account not authorized for Homebase.');
+    }
 
-  // Establish Homebase session
-  $_SESSION['user'] = [
-    'email'        => $payload['email'],
-    'account_type' => $accountType,
-    'authenticated_at' => time(),
-  ];
+    /**
+     * 🔐 CRITICAL: Regenerate session after auth
+     */
+    session_regenerate_id(true);
 
-  // Redirect into app
-  header('Location: /');
-  exit;
+    /**
+     * Establish Homebase session
+     */
+    $_SESSION['user'] = [
+        'email'         => $payload['email'],
+        'account_type'  => $accountType,
+        'authenticated' => true,
+        'login_time'    => time(),
+    ];
+
+    /**
+     * Redirect into Homebase
+     */
+    header('Location: /');
+    exit;
 }

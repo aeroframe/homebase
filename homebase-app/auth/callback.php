@@ -2,13 +2,13 @@
 session_start();
 
 /**
- * TEMPORARY: Inline secret
- * MUST match the secret used in aerofra.me/auth/login_submit.php
+ * TEMPORARY: Inline shared secret
+ * MUST match auth/login_submit.php
  */
 $HOMEBASE_AUTH_SECRET = 'c6da003ff39556572305e4e8c2796c0e2e109b3cddae547194ceb57ddd7ee960';
 
 /**
- * Validate incoming params
+ * Validate incoming token
  */
 $token = $_GET['token'] ?? '';
 $sig   = $_GET['sig'] ?? '';
@@ -19,7 +19,7 @@ if (!$token || !$sig) {
 }
 
 /**
- * Verify signature
+ * Verify signature (USE INLINE SECRET)
  */
 $expected = hash_hmac('sha256', $token, $HOMEBASE_AUTH_SECRET);
 
@@ -29,7 +29,7 @@ if (!hash_equals($expected, $sig)) {
 }
 
 /**
- * Decode payload
+ * Decode token payload
  */
 $data = json_decode(base64_decode($token), true);
 
@@ -64,7 +64,6 @@ session_regenerate_id(true);
 $_SESSION['user'] = [
 	'email'         => $data['email'],
 	'account_type'  => $accountType,
-	'device_id'     => $data['device_id'] ?? null,
 	'authenticated' => true,
 	'login_time'    => time(),
 ];
