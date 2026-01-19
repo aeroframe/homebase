@@ -51,32 +51,38 @@ $error = $_GET['error'] ?? null;
 </div>
 
 <script>
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-	e.preventDefault();
-
-	const res = await fetch('https://aerofra.me/api/auth/login.php', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			email: email.value,
-			password: password.value
-		})
-	});
-
-	const data = await res.json();
-
-	if (data.success && ['LineTech','LineOps'].includes(data.user.account_type)) {
-		const r = await fetch('/session.php', {
+	document.getElementById('loginForm').addEventListener('submit', async (e) => {
+		e.preventDefault();
+	
+		const emailInput = document.getElementById('email');
+		const passwordInput = document.getElementById('password');
+	
+		const res = await fetch('https://aerofra.me/api/auth/login.php', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(data.user)
+			body: JSON.stringify({
+				email: emailInput.value.trim(),
+				password: passwordInput.value
+			})
 		});
-		if (r.ok) location.href = '/';
-	} else {
-		location.href = '/login.php?error=invalid';
-	}
-});
-</script>
+	
+		const data = await res.json();
+	
+		if (data.success && ['LineTech','LineOps'].includes(data.user.account_type)) {
+			const r = await fetch('/session.php', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(data.user)
+			});
+	
+			if (r.ok) {
+				window.location.href = '/';
+			}
+		} else {
+			window.location.href = '/login.php?error=invalid';
+		}
+	});
+	</script>
 
 </body>
 </html>
