@@ -1,35 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----------------------------------------
+############################################################
 # Homebase Installer (Aeroframe)
-# Raspberry Pi OS / Debian Trixie / 64-bit
-# ----------------------------------------
+# Raspberry Pi OS / Debian (Trixie)
+############################################################
 
+### CONSTANTS
+TARGET_HOSTNAME="homebase"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="/opt/homebase/src"
 WEB_ROOT="/var/www/homebase"
 RUN_DIR="/run/homebase"
 TMPFILES_CONF="/etc/tmpfiles.d/homebase.conf"
 
-# ---------------------------
-# Helpers
-# ---------------------------
-log() {
-  echo -e "\n[$(date '+%H:%M:%S')] $*"
-}
-
-main_banner() {
-  echo "======================================"
-  echo " Homebase Installer (Aeroframe)"
-  echo " Raspberry Pi / Debian"
-  echo "======================================"
-}
+### HELPERS
+log() { echo -e "\n[$(date '+%H:%M:%S')] $*"; }
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    echo "Please run with sudo:"
-    echo "  sudo ./scripts/install.sh"
+    echo "Please run with sudo: sudo ./scripts/install.sh"
     exit 1
   fi
 }
@@ -38,97 +28,105 @@ detect_php_sock() {
   ls -1 /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -n 1 || true
 }
 
-# ---------------------------
-# Git safety
-# ---------------------------
-fix_repo_ownership() {
-  log "Trust repo ownership"
+############################################################
+# 0. CRITICAL BASELINE (SSH + HOSTNAME + mDNS)
+############################################################
+baseline_system() {
+  log "[0/9] Baseline system (SSH + hostname + mDNS)"
+
+  apt-get update -y
+  apt-get install -y \
+    openssh-server \
+    avahi-daemon \
+    avahi-utils
+
+  systemctl enable ssh
+  systemctl start ssh
+
+  CURRENT_HOST="$(hostname)"
+
+  if [[ "${CURRENT_HOST}" != "${TARGET_HOSTNAME}" ]]; then
+    log "Setting hostname → ${TARGET_HOSTNAME}"
+    hostnamectl set-hostname "${TARGET_HOSTNAME}"
+  fi
+
+  # Fix /etc/hosts (THIS is what prevents sudo + hostname breakage)
+  if grep -q "^127.0.1.1" /etc/hosts; then
+    sed -i "s/^127.0.1.1.*/127.0.1.1 ${TARGET_HOSTNAME}/" /etc/hosts
+  else
+    echo "127.0.1.1 ${TARGET_HOSTNAME}" >> /etc/hosts
+  fi
+
+  systemctl restart systemd-hostnamed
+  systemctl restart avahi-daemon
+}
+
+############################################################
+# 1. GIT SAFETY
+############################################################
+fix_git_safety() {
+  log "[1/9] Git safe.directory"
   git config --global --add safe.directory /opt/homebase || true
   git config --global --add safe.directory "${REPO_ROOT}" || true
 }
 
-# ---------------------------
-# SSH SAFETY (critical)
-# ---------------------------
-ensure_ssh() {
-  log "Ensure SSH access (critical)"
-  apt-get update -y
-  apt-get install -y openssh-server
-  systemctl enable ssh
-  systemctl restart ssh
-}
-
-# ---------------------------
-# Packages
-# ---------------------------
+############################################################
+# 2. SYSTEM PACKAGES
+############################################################
 install_packages() {
-  log "[1/9] System update"
+  log "[2/9] Install packages"
+
   apt-get update -y
   apt-get upgrade -y
 
-  log "[2/9] Base packages"
   apt-get install -y \
     git curl ca-certificates rsync \
     nginx php-fpm \
-    dnsmasq hostapd rfkill \
     python3 python3-pip \
+    dnsmasq hostapd rfkill \
     build-essential cmake pkg-config \
     librtlsdr-dev libusb-1.0-0-dev libncurses-dev libboost-all-dev \
-    avahi-daemon avahi-utils
-
-  log "[3/9] SoapySDR"
-  apt-get install -y \
     libsoapysdr-dev soapysdr-tools \
-    soapysdr0.8-module-rtlsdr \
-    soapysdr0.8-module-all || true
+    soapysdr0.8-module-rtlsdr soapysdr0.8-module-all
 }
 
-# ---------------------------
-# Directories
-# ---------------------------
+############################################################
+# 3. DIRECTORIES
+############################################################
 prepare_dirs() {
-  log "[4/9] Prepare directories"
-  install -d "${SRC_DIR}"
-  install -d "${WEB_ROOT}"
+  log "[3/9] Create directories"
+  install -d "${SRC_DIR}" "${WEB_ROOT}" "${RUN_DIR}"
 }
 
-# ---------------------------
-# Git helper
-# ---------------------------
+############################################################
+# 4. BUILD SDR SOFTWARE
+############################################################
 clone_or_update() {
   local name="$1"
   local url="$2"
   local dest="${SRC_DIR}/${name}"
 
   if [[ -d "${dest}/.git" ]]; then
-    log "Updating ${name}"
     git -C "${dest}" fetch --all --prune
-    git -C "${dest}" reset --hard origin/main 2>/dev/null || \
+    git -C "${dest}" reset --hard origin/main || \
     git -C "${dest}" reset --hard origin/master
   else
-    log "Cloning ${name}"
     git clone "${url}" "${dest}"
   fi
 }
 
-# ---------------------------
-# dump1090-fa
-# ---------------------------
 build_dump1090() {
-  log "[5/9] Build dump1090-fa"
-  clone_or_update "dump1090" "https://github.com/flightaware/dump1090.git"
+  log "[4/9] Build dump1090-fa"
+  clone_or_update dump1090 https://github.com/flightaware/dump1090.git
   pushd "${SRC_DIR}/dump1090" >/dev/null
   make -j"$(nproc)"
   install -m 755 dump1090 /usr/local/bin/dump1090-fa
   popd >/dev/null
 }
 
-# ---------------------------
-# dump978-fa
-# ---------------------------
 build_dump978() {
-  log "[6/9] Build dump978-fa"
-  clone_or_update "dump978" "https://github.com/flightaware/dump978.git"
+  log "[5/9] Build dump978-fa"
+  clone_or_update dump978 https://github.com/flightaware/dump978.git
   pushd "${SRC_DIR}/dump978" >/dev/null
   make clean || true
   make -j"$(nproc)"
@@ -136,11 +134,11 @@ build_dump978() {
   popd >/dev/null
 }
 
-# ---------------------------
-# Runtime dirs
-# ---------------------------
+############################################################
+# 5. RUNTIME DIRECTORIES
+############################################################
 setup_tmpfiles() {
-  log "[7/9] Runtime directories"
+  log "[6/9] Runtime dirs"
   cat > "${TMPFILES_CONF}" <<EOF
 d ${RUN_DIR} 0755 root root -
 d ${RUN_DIR}/dump1090 0755 root root -
@@ -149,27 +147,27 @@ EOF
   systemd-tmpfiles --create
 }
 
-# ---------------------------
-# systemd services
-# ---------------------------
+############################################################
+# 6. SYSTEMD SERVICES
+############################################################
 install_systemd_units() {
-  log "Install systemd services"
+  log "[7/9] systemd services"
 
-  cat > /etc/systemd/system/dump1090-fa.service <<'EOF'
+  cat > /etc/systemd/system/dump1090-fa.service <<EOF
 [Unit]
 Description=Homebase dump1090-fa
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/dump1090-fa --net --write-json /run/homebase/dump1090
+ExecStart=/usr/local/bin/dump1090-fa --net --write-json ${RUN_DIR}/dump1090
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  cat > /etc/systemd/system/dump978-fa.service <<'EOF'
+  cat > /etc/systemd/system/dump978-fa.service <<EOF
 [Unit]
 Description=Homebase dump978-fa
 After=network-online.target
@@ -188,39 +186,21 @@ EOF
   systemctl restart dump1090-fa dump978-fa || true
 }
 
-# ---------------------------
-# Web UI
-# ---------------------------
+############################################################
+# 7. WEB UI + NGINX
+############################################################
 deploy_web_app() {
-  log "[8/9] Deploy web UI"
+  log "[8/9] Web UI"
 
   rsync -a --delete "${REPO_ROOT}/homebase-app/" "${WEB_ROOT}/"
+  chown -R www-data:www-data "${WEB_ROOT}"
 
-  install -d "${WEB_ROOT}/feeds"
-
-  cat > "${WEB_ROOT}/feeds/combined.php" <<'EOF'
-<?php
-header('Content-Type: application/json');
-
-$out = [
-  'generated_at' => gmdate('c'),
-  'dump1090' => @json_decode(@file_get_contents('/run/homebase/dump1090/aircraft.json'), true),
-  'dump978'  => @json_decode(@file_get_contents('/run/homebase/dump978/latest.json'), true),
-];
-
-echo json_encode($out);
-EOF
-}
-
-install_nginx_site() {
-  log "Configure nginx"
-
-  local php_sock
   php_sock="$(detect_php_sock)"
 
   cat > /etc/nginx/sites-available/homebase <<EOF
 server {
   listen 80 default_server;
+  server_name _;
   root ${WEB_ROOT};
   index index.php;
 
@@ -242,30 +222,31 @@ EOF
   systemctl restart nginx
 }
 
-# ---------------------------
-# Self-test
-# ---------------------------
+############################################################
+# 8. SELF TEST
+############################################################
 self_test() {
   log "[9/9] Self-test"
 
-  command -v dump1090-fa >/dev/null && echo "✔ dump1090-fa"
-  command -v dump978-fa  >/dev/null && echo "✔ dump978-fa"
-  systemctl is-active nginx >/dev/null && echo "✔ nginx"
-  systemctl is-active ssh   >/dev/null && echo "✔ ssh"
+  echo "Hostname: $(hostname)"
+  hostname -f || true
+
+  systemctl is-active ssh && echo "✔ SSH"
+  systemctl is-active nginx && echo "✔ nginx"
+  command -v dump1090-fa && echo "✔ dump1090-fa"
+  command -v dump978-fa && echo "✔ dump978-fa"
 
   echo
-  echo "Homebase ready:"
-  echo "  http://homebase.local/"
-  echo "  http://<PI_IP>/feeds/combined.php"
+  echo "Homebase available at:"
+  echo "  http://homebase.local"
 }
 
-# ---------------------------
+############################################################
 # RUN
-# ---------------------------
+############################################################
 require_root
-main_banner
-fix_repo_ownership
-ensure_ssh
+baseline_system
+fix_git_safety
 install_packages
 prepare_dirs
 build_dump1090
@@ -273,5 +254,4 @@ build_dump978
 setup_tmpfiles
 install_systemd_units
 deploy_web_app
-install_nginx_site
 self_test
