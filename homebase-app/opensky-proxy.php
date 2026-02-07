@@ -32,8 +32,8 @@ $adsblol_base = 'https://api.adsb.lol/v2/point';
 $adsblol_enabled = true;
 
 // Default lat/lon/radius (replace with DB settings later)
-$default_lat = 40.6446;      // e.g. 42.8808
-$default_lon = 73.7797;      // e.g. -85.5228
+$default_lat = 40.6413;      // e.g. 42.8808
+$default_lon = -73.7781;      // e.g. -85.5228
 $default_radius = 50;     // nm (1..250)
 
 // Allow overriding lat/lon/radius by query string (optional)
