@@ -23,8 +23,8 @@ header("Content-Type: application/json");
 $adsblol_base = 'https://api.adsb.lol/v2/point';
 
 // Defaults (set these to your preferred airport later via settings DB)
-$default_lat = 42.8808;   // KGRR
-$default_lon = -85.5228;  // KGRR
+$default_lat = 40.6413;   // KGRR
+$default_lon = -73.7781;  // KGRR
 $default_radius = 80;     // NM (1..250)
 
 /** -----------------------------
