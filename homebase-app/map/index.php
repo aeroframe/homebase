@@ -1,3 +1,20 @@
+<?php
+session_start();
+
+/**
+ * Require authenticated Homebase session
+ */
+if (
+    empty($_SESSION['user']) ||
+    empty($_SESSION['user']['authenticated']) ||
+    $_SESSION['user']['authenticated'] !== true
+) {
+    header('Location: /login.php');
+    exit;
+}
+
+$user = $_SESSION['user'];
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
