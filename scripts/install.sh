@@ -13,6 +13,7 @@ set -euo pipefail
 # - nginx + avahi + services survive reboot
 # - homebase.local works after reboot
 # - SDR optional (services tolerate missing hardware)
+# - Single SDR safety: do NOT run 1090 + 978 simultaneously
 #
 # Systemd units live in repo: /systemd
 ############################################################
@@ -80,7 +81,7 @@ ensure_php_fpm_running() {
 # 0. Baseline system
 ############################################################
 baseline_system() {
-  log "[0/8] Baseline system"
+  log "[0/9] Baseline system"
 
   apt_run update -y
   apt_run install -y openssh-server avahi-daemon avahi-utils locales
@@ -106,31 +107,48 @@ baseline_system() {
 # 1. Packages
 ############################################################
 install_packages() {
-  log "[1/8] Installing packages"
+  log "[1/9] Installing packages"
 
   apt_run update -y
   apt_run upgrade -y
 
   apt_run install -y \
-    git curl ca-certificates rsync \
+    git curl ca-certificates rsync lsof usbutils \
     nginx php-fpm \
     python3 python3-pip \
     build-essential cmake pkg-config \
-    librtlsdr-dev libusb-1.0-0-dev libncurses-dev libboost-all-dev \
+    libusb-1.0-0-dev libncurses-dev libboost-all-dev \
+    librtlsdr-dev rtl-sdr \
     libsoapysdr-dev soapysdr-tools \
     soapysdr0.8-module-rtlsdr soapysdr0.8-module-all
 }
 
 ############################################################
-# 2. Directories
+# 2. SDR kernel driver safety (prevents DVB from stealing RTL)
+############################################################
+configure_rtlsdr_blacklist() {
+  log "[2/9] Configure RTL-SDR DVB blacklist (prevents tuner claim)"
+
+  cat > /etc/modprobe.d/rtl-sdr-blacklist.conf <<'EOF'
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+EOF
+
+  # Try unloading if already loaded; ignore if not present.
+  modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
+}
+
+############################################################
+# 3. Directories
 ############################################################
 prepare_dirs() {
-  log "[2/8] Creating directories"
+  log "[3/9] Creating directories"
   install -d "$SRC_DIR" "$WEB_ROOT" "$RUN_DIR"
 }
 
 ############################################################
-# 3. SDR builds (safe if hardware missing)
+# 4. SDR builds (safe if hardware missing)
 ############################################################
 clone_or_update() {
   local name="$1"
@@ -147,7 +165,7 @@ clone_or_update() {
 }
 
 build_dump1090() {
-  log "[3/8] Building dump1090-fa"
+  log "[4/9] Building dump1090-fa"
   clone_or_update dump1090 https://github.com/flightaware/dump1090.git
   pushd "$SRC_DIR/dump1090" >/dev/null || return 0
   make -j"$(nproc)" && install -m755 dump1090 /usr/local/bin/dump1090-fa || true
@@ -155,7 +173,7 @@ build_dump1090() {
 }
 
 build_dump978() {
-  log "[4/8] Building dump978-fa"
+  log "[5/9] Building dump978-fa"
   clone_or_update dump978 https://github.com/flightaware/dump978.git
   pushd "$SRC_DIR/dump978" >/dev/null || return 0
   make clean || true
@@ -164,10 +182,10 @@ build_dump978() {
 }
 
 ############################################################
-# 4. Runtime dirs
+# 5. Runtime dirs (tmpfiles, reboot-safe)
 ############################################################
 setup_tmpfiles() {
-  log "[5/8] Runtime dirs"
+  log "[6/9] Runtime dirs"
 
   cat > "$TMPFILES_CONF" <<EOF
 d $RUN_DIR 0755 root root -
@@ -179,10 +197,10 @@ EOF
 }
 
 ############################################################
-# 5. systemd services (from repo)
+# 6. systemd services (from repo)
 ############################################################
 install_services() {
-  log "[6/8] Installing systemd units"
+  log "[7/9] Installing systemd units"
 
   if [[ ! -d "$SYSTEMD_SRC_DIR" ]]; then
     echo "ERROR: Missing /systemd directory in repo"
@@ -197,19 +215,19 @@ install_services() {
 
   systemctl daemon-reload
 
-  systemctl enable \
-    nginx \
-    avahi-daemon \
-    homebase-avahi-fix \
-    dump1090-fa \
-    dump978-fa || true
+  # Always keep core services enabled
+  systemctl enable nginx avahi-daemon homebase-avahi-fix 2>/dev/null || true
+
+  # SDR services are installed, but we only enable 1090 by default (single SDR safe)
+  systemctl enable dump1090-fa 2>/dev/null || true
+  systemctl disable dump978-fa 2>/dev/null || true
 }
 
 ############################################################
-# 6. Web UI + nginx
+# 7. Web UI + nginx
 ############################################################
 deploy_web() {
-  log "[7/8] Deploying web UI"
+  log "[8/9] Deploying web UI"
 
   rsync -a --delete "$REPO_ROOT/homebase-app/" "$WEB_ROOT/"
   chown -R www-data:www-data "$WEB_ROOT"
@@ -245,14 +263,24 @@ EOF
 }
 
 ############################################################
-# 7. Start services
+# 8. Start services (single SDR safe)
 ############################################################
 start_services() {
-  log "[8/8] Starting services"
+  log "[9/9] Starting services"
+
   systemctl restart avahi-daemon
   systemctl restart nginx
+
+  # SDR: default to 1090 only (users can switch to 978 later)
   systemctl restart dump1090-fa || true
-  systemctl restart dump978-fa || true
+  systemctl stop dump978-fa 2>/dev/null || true
+
+  log "Post-install SDR check:"
+  if lsusb | grep -qiE '0bda:2832|rtl|realtek'; then
+    echo "✔ RTL-SDR detected via lsusb"
+  else
+    echo "⚠ No RTL-SDR detected (ok if you haven't plugged one in yet)"
+  fi
 }
 
 ############################################################
@@ -264,6 +292,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 baseline_system
 install_packages
+configure_rtlsdr_blacklist
 prepare_dirs
 build_dump1090
 build_dump978
@@ -277,3 +306,6 @@ log "Access:"
 log "  http://homebase.local/"
 log "  http://$(hostname -I | awk '{print $1}')"
 log "Reboot-safe: YES"
+log "Default ADS-B mode: 1090"
+log "To switch to 978 later:"
+log "  sudo systemctl stop dump1090-fa && sudo systemctl start dump978-fa"

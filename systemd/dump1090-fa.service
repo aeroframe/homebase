@@ -1,14 +1,17 @@
 [Unit]
-Description=Homebase dump1090-fa
+Description=Homebase dump1090-fa (ADS-B 1090 MHz)
 After=network-online.target systemd-udev-settle.service
 Wants=network-online.target
+
+# Prevent 1090 and 978 from fighting over a single RTL-SDR
+Conflicts=dump978-fa.service
+After=dump978-fa.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/dump1090-fa --net --write-json /run/homebase/dump1090
 Restart=always
 RestartSec=10
-StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 

@@ -23,7 +23,7 @@ if compgen -G "systemd/homebase-*.service" > /dev/null; then
   install -m 644 systemd/homebase-*.service /etc/systemd/system/
 fi
 
-# Dump units (ALWAYS refresh if present in repo)
+# Dump units (always refresh if present)
 if [[ -f "systemd/dump1090-fa.service" ]]; then
   install -m 644 systemd/dump1090-fa.service /etc/systemd/system/dump1090-fa.service
 fi
@@ -36,8 +36,21 @@ systemctl daemon-reload
 
 echo "[4/7] Restart services"
 systemctl restart nginx || true
-systemctl restart dump1090-fa || true
-systemctl restart dump978-fa || true
+
+# Restart only the active ADS-B receiver to avoid SDR contention.
+# Priority:
+#  1) If dump1090 is active -> restart dump1090 only
+#  2) Else if dump978 is active -> restart dump978 only
+#  3) Else restart dump1090 (default) and leave dump978 stopped
+if systemctl is-active --quiet dump1090-fa; then
+  systemctl restart dump1090-fa || true
+elif systemctl is-active --quiet dump978-fa; then
+  systemctl restart dump978-fa || true
+else
+  # Default to 1090 on systems with a single SDR
+  systemctl restart dump1090-fa || true
+  systemctl stop dump978-fa 2>/dev/null || true
+fi
 
 # If boot unit exists, restart it
 systemctl restart homebase-boot 2>/dev/null || true
@@ -48,6 +61,15 @@ chmod 755 /run/homebase /run/homebase/dump1090 /run/homebase/dump978 || true
 
 echo "[6/7] Basic health checks"
 systemctl is-active --quiet nginx && echo "✔ nginx active" || echo "✖ nginx inactive"
+
+# Determine active ADS-B mode
+MODE="none"
+if systemctl is-active --quiet dump1090-fa; then
+  MODE="1090"
+elif systemctl is-active --quiet dump978-fa; then
+  MODE="978"
+fi
+echo "ADS-B mode: ${MODE}"
 
 # dump1090
 if systemctl is-active --quiet dump1090-fa; then

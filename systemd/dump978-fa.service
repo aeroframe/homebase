@@ -1,15 +1,21 @@
 [Unit]
-Description=Homebase dump978-fa
+Description=Homebase dump978-fa (UAT 978 MHz)
 After=network-online.target systemd-udev-settle.service
 Wants=network-online.target
 
+# Prevent SDR contention with 1090 on single-stick systems
+Conflicts=dump1090-fa.service
+After=dump1090-fa.service
+
 [Service]
 Type=simple
+
+# dump978-fa does NOT support --write-json
+# Use json-stdout and redirect to Homebase runtime path
 ExecStart=/bin/bash -lc 'mkdir -p /run/homebase/dump978 && exec /usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=0 --json-stdout > /run/homebase/dump978/aircraft.json'
-# ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
+
 Restart=always
 RestartSec=10
-StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 
