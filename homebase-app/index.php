@@ -18,29 +18,45 @@ $user = $_SESSION['user'];
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>Homebase</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Geofence ADS-B Tracker</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-draw/dist/leaflet.draw.css" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-<h1>Homebase</h1>
+  <div id="map"></div>
 
-<p>
-    Logged in as
-    <strong><?= htmlspecialchars($user['email'], ENT_QUOTES) ?></strong>
-    (<?= htmlspecialchars($user['account_type']) ?>)
-</p>
+  <!-- Sidebar / Bottom Sheet -->
+  <aside id="sidebar">
+    <div id="sidebar-handle"></div>
 
-<ul>
-    <li><a href="/feeds/combined.php">Combined Feed</a></li>
-    <li><a href="/feeds/dump1090-aircraft.php">ADS-B (1090)</a></li>
-    <li><a href="/feeds/dump978-latest.php">UAT (978)</a></li>
-</ul>
+    <!-- 🔑 SCROLL CONTAINER (ONLY THIS SCROLLS) -->
+    <div id="sidebar-scroll">
 
-<p>
-    <a href="/logout.php">Sign out</a>
-</p>
+      <!-- 🔑 CONTENT CONTAINER (ALL PADDING LIVES HERE) -->
+      <div id="sidebar-content">
 
+        <!-- Aircraft card injected by JS -->
+        <div id="selected-aircraft-container"></div>
+
+        <section class="alerts-section">
+          <h2>Geofence Alerts</h2>
+          <div id="alert-list">
+            <p>Draw a fence or activate rings.</p>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </aside>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="opensky.js?v=7"></script>
 </body>
 </html>
