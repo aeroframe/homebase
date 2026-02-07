@@ -33,7 +33,7 @@ $dump1090_url = 'http://homebase.local/adsb/1090/';
 $adsblol_base = 'https://api.adsb.lol/v2/point';
 
 // Default toggle (set true to always use ADSB.lol unless overridden)
-$USE_ADSBLOL_DEFAULT = false;
+$USE_ADSBLOL_DEFAULT = true;
 
 // Default ADSB.lol location (KGRR example)
 $DEFAULT_LAT = 42.8808;
