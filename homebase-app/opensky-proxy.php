@@ -1,171 +1,189 @@
 <?php
 /**
- * opensky-proxy.php (ADSB.lol → OpenSky-style states)
+ * opensky-proxy.php (ADSB.lol ONLY)
  *
- * Matches your existing output format exactly:
- * {
- *   "time": <unix>,
- *   "states": [ [...], ... ]
- * }
+ * Converts ADSB.lol /v2/point/{lat}/{lon}/{radius} output
+ * into an OpenSky-like response:
+ *   { "time": <unix>, "states": [ [...], ... ] }
  *
- * Notes:
- * - Keeps the same field semantics you already use:
- *   - velocity stays in knots (because your dump1090 code uses gs directly)
- *   - alt/geoAlt stay in feet (because your dump1090 code uses alt_baro/alt_geom directly)
- * - This is intentional so your map parsing doesn’t need to change.
+ * Query params:
+ *   ?lat=40.6413&lon=-73.7781&radius=150
+ *   ?debug=1  (adds source + url + counts)
  */
 
 header("Content-Type: application/json");
 
-/** -----------------------------
- * CONFIG (ADSB.lol /point)
- * ----------------------------- */
-$adsblol_base = 'https://api.adsb.lol/v2/closest';
+// --------------------
+// Config / defaults
+// --------------------
+$adsblol_base = 'https://api.adsb.lol/v2/point';
 
-// Defaults (set these to your preferred airport later via settings DB)
-$default_lat = 40.6413;   // KGRR
-$default_lon = -73.7781;  // KGRR
-$default_radius = 80;     // NM (1..250)
+// Defaults (JFK-ish)
+$lat = isset($_GET['lat']) ? (float)$_GET['lat'] : 40.6413;
+$lon = isset($_GET['lon']) ? (float)$_GET['lon'] : -73.7781;
+$radius = isset($_GET['radius']) ? (int)$_GET['radius'] : 150; // nm 0..250
+$debug = !empty($_GET['debug']);
 
-/** -----------------------------
- * Optional overrides (?lat=&lon=&radius=)
- * ----------------------------- */
-$lat = isset($_GET['lat']) ? (float)$_GET['lat'] : $default_lat;
-$lon = isset($_GET['lon']) ? (float)$_GET['lon'] : $default_lon;
-$radius = isset($_GET['radius']) ? (int)$_GET['radius'] : $default_radius;
-
-// Clamp radius to ADSB.lol limits
+// Clamp radius
 if ($radius < 1) $radius = 1;
 if ($radius > 250) $radius = 250;
 
 // Validate lat/lon
 if ($lat < -90 || $lat > 90 || $lon < -180 || $lon > 180) {
-	echo json_encode(['error' => 'Invalid lat/lon'], JSON_PRETTY_PRINT);
-	exit;
+  http_response_code(400);
+  echo json_encode(['error' => 'Invalid lat/lon'], JSON_PRETTY_PRINT);
+  exit;
 }
 
-/** -----------------------------
- * Fetch ADSB.lol
- * ----------------------------- */
+// Build URL
 $adsblol_url = sprintf('%s/%s/%s/%d', $adsblol_base, $lat, $lon, $radius);
 
+// --------------------
+// HTTP GET via cURL
+// --------------------
 $ch = curl_init($adsblol_url);
 curl_setopt_array($ch, [
-	CURLOPT_RETURNTRANSFER => true,
-	CURLOPT_TIMEOUT => 10,
-	CURLOPT_FOLLOWLOCATION => true,
-	CURLOPT_HTTPHEADER => ['Accept: application/json'],
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_TIMEOUT => 10,
+  CURLOPT_FOLLOWLOCATION => true,
+  CURLOPT_HTTPHEADER => [
+	'Accept: application/json'
+  ],
 ]);
-$json = curl_exec($ch);
-$http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+$body = curl_exec($ch);
 $err  = curl_error($ch);
+$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
-if ($http !== 200 || !$json) {
-	echo json_encode([
-		'error' => 'Failed to fetch ADSB.lol data',
-		'http' => $http,
-		'curl_error' => $err ?: null,
-		'url' => $adsblol_url
-	], JSON_PRETTY_PRINT);
-	exit;
+if ($code !== 200 || !$body) {
+  http_response_code(502);
+  echo json_encode([
+	'error' => 'Failed to fetch ADSB.lol',
+	'http' => $code,
+	'curl_error' => $err ?: null,
+	'url' => $adsblol_url
+  ], JSON_PRETTY_PRINT);
+  exit;
 }
 
-$data = json_decode($json, true);
+// --------------------
+// Parse JSON
+// --------------------
+$data = json_decode($body, true);
 if (!is_array($data)) {
-	echo json_encode([
-		'error' => 'ADSB.lol returned invalid JSON',
-		'url' => $adsblol_url
-	], JSON_PRETTY_PRINT);
-	exit;
+  http_response_code(502);
+  echo json_encode([
+	'error' => 'ADSB.lol returned invalid JSON',
+	'url' => $adsblol_url
+  ], JSON_PRETTY_PRINT);
+  exit;
 }
 
-/** -----------------------------
- * ADSB.lol aircraft list extraction
- * (key names can vary; try common ones)
- * ----------------------------- */
+/**
+ * ADSB.lol /v2/point commonly returns aircraft list under:
+ *   - $data['ac']   (most common)
+ * Some versions may use:
+ *   - $data['aircraft']
+ *   - root array
+ */
 $aircraftList = null;
 
 if (isset($data['ac']) && is_array($data['ac'])) {
-	$aircraftList = $data['ac'];
+  $aircraftList = $data['ac'];
 } elseif (isset($data['aircraft']) && is_array($data['aircraft'])) {
-	$aircraftList = $data['aircraft'];
-} elseif (isset($data['data']) && is_array($data['data'])) {
-	$aircraftList = $data['data'];
+  $aircraftList = $data['aircraft'];
 } elseif (array_keys($data) === range(0, count($data) - 1)) {
-	// Root array fallback
-	$aircraftList = $data;
+  // root array
+  $aircraftList = $data;
 }
 
 if (!$aircraftList) {
-	echo json_encode([
-		'error' => 'ADSB.lol response missing aircraft list',
-		'url' => $adsblol_url,
-		'keys' => array_keys($data),
-	], JSON_PRETTY_PRINT);
-	exit;
+  http_response_code(502);
+  echo json_encode([
+	'error' => 'ADSB.lol response did not include aircraft list',
+	'url' => $adsblol_url,
+	'top_level_keys' => array_keys($data)
+  ], JSON_PRETTY_PRINT);
+  exit;
 }
 
-/** -----------------------------
- * Normalize to OpenSky-style `states`
- * (matching your dump1090 mapping)
- * ----------------------------- */
+// --------------------
+// Convert to OpenSky-like states
+// --------------------
+$now = time();
 $states = [];
-$time = time();
 
 foreach ($aircraftList as $ac) {
-	if (!is_array($ac)) continue;
+  // Need position
+  if (!isset($ac['lat'], $ac['lon'])) continue;
 
-	// Skip aircraft with no position data
-	if (!isset($ac['lat']) || !isset($ac['lon'])) {
-		continue;
-	}
+  // Identify hex/icao
+  $hex = $ac['hex'] ?? ($ac['icao'] ?? ($ac['icao24'] ?? ''));
+  $hex = strtolower(trim((string)$hex));
+  if ($hex === '') continue;
 
-	// Common hex keys
-	$hex = $ac['hex'] ?? ($ac['icao'] ?? ($ac['icao24'] ?? ''));
-	if ($hex === '') continue;
+  // Callsign/flight
+  $callsign = trim((string)($ac['flight'] ?? ($ac['callsign'] ?? '')));
+  if ($callsign === '') $callsign = $hex;
 
-	$callsign = trim($ac['flight'] ?? ($ac['callsign'] ?? $hex));
-	$originCountry = $ac['country'] ?? 'N/A';
+  $originCountry = (string)($ac['country'] ?? 'N/A');
 
-	$lonVal = $ac['lon'];
-	$latVal = $ac['lat'];
+  // ADSB.lol fields (common)
+  $alt = isset($ac['alt_baro']) ? (float)$ac['alt_baro'] : null;
+  $geoAlt = isset($ac['alt_geom']) ? (float)$ac['alt_geom'] : $alt;
 
-	// Match dump1090-style fields (keep in same units as your existing code)
-	$velocity = $ac['gs'] ?? null;        // knots (leave as-is)
-	$track    = $ac['track'] ?? null;     // degrees
-	$vRate    = $ac['baro_rate'] ?? null; // often ft/min; leave as-is
-	$squawk   = $ac['squawk'] ?? null;
+  $velocity = isset($ac['gs']) ? (float)$ac['gs'] : null;     // knots
+  $track    = isset($ac['track']) ? (float)$ac['track'] : null; // degrees
+  $vRate    = isset($ac['baro_rate']) ? (float)$ac['baro_rate'] : null;
 
-	$spi = false;
-	$onGround = false;        // ADSB.lol may not provide; keep consistent
-	$positionSource = null;   // you used null before
+  $squawk = $ac['squawk'] ?? null;
 
-	$alt = isset($ac['alt_baro']) ? (float)$ac['alt_baro'] : null;     // feet (leave as-is)
-	$geoAlt = isset($ac['alt_geom']) ? (float)$ac['alt_geom'] : $alt;  // feet (leave as-is)
+  // On-ground: ADSB.lol sometimes has "ground" or "on_ground"
+  $onGround = false;
+  if (isset($ac['ground'])) $onGround = (bool)$ac['ground'];
+  if (isset($ac['on_ground'])) $onGround = (bool)$ac['on_ground'];
 
-	$states[] = [
-		$hex,           // 0 - ICAO24
-		$callsign,      // 1 - Callsign
-		$originCountry, // 2 - Origin Country
-		$time,          // 3 - Time Position
-		$time,          // 4 - Last Contact
-		$lonVal,        // 5 - Longitude
-		$latVal,        // 6 - Latitude
-		$alt,           // 7 - Baro Altitude
-		$onGround,      // 8 - On Ground
-		$velocity,      // 9 - Velocity (knots)
-		$track,         // 10 - True Track
-		$vRate,         // 11 - Vertical Rate
-		null,           // 12 - Sensors
-		$geoAlt,        // 13 - Geo Altitude
-		$squawk,        // 14 - Squawk
-		$spi,           // 15 - SPI
-		$positionSource // 16 - Position Source
-	];
+  $spi = false;
+  $positionSource = 'adsblol';
+
+  $states[] = [
+	$hex,          // 0  ICAO24
+	$callsign,     // 1  Callsign
+	$originCountry,// 2  Origin Country
+	$now,          // 3  Time Position
+	$now,          // 4  Last Contact
+	(float)$ac['lon'], // 5 Longitude
+	(float)$ac['lat'], // 6 Latitude
+	$alt,          // 7  Baro Altitude
+	$onGround,     // 8  On Ground
+	$velocity,     // 9  Velocity (knots)
+	$track,        // 10 True Track
+	$vRate,        // 11 Vertical Rate
+	null,          // 12 Sensors
+	$geoAlt,       // 13 Geo Altitude
+	$squawk,       // 14 Squawk
+	$spi,          // 15 SPI
+	$positionSource// 16 Position Source
+  ];
 }
 
-echo json_encode([
-	'time' => time(),
-	'states' => $states
-], JSON_PRETTY_PRINT);
+// --------------------
+// Output
+// --------------------
+$out = [
+  'time' => $now,
+  'states' => $states
+];
+
+if ($debug) {
+  $out['debug'] = [
+	'source' => 'adsblol_point',
+	'url' => $adsblol_url,
+	'aircraft_list_count' => count($aircraftList),
+	'states_count' => count($states),
+	'top_level_keys' => array_keys($data),
+  ];
+}
+
+echo json_encode($out, JSON_PRETTY_PRINT);
