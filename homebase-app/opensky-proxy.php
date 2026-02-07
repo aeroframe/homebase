@@ -20,7 +20,7 @@ header("Content-Type: application/json");
 /** -----------------------------
  * CONFIG (ADSB.lol /point)
  * ----------------------------- */
-$adsblol_base = 'https://api.adsb.lol/v2/point';
+$adsblol_base = 'https://api.adsb.lol/v2/closest';
 
 // Defaults (set these to your preferred airport later via settings DB)
 $default_lat = 40.6413;   // KGRR
