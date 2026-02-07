@@ -33,7 +33,7 @@ $dump1090_candidates = [
 $adsblol_base = 'https://api.adsb.lol/v2/point';
 
 // Enable/disable fallback
-$adsblol_enabled = true;
+$adsblol_enabled = false;
 
 // Defaults (set these to your receiver location; DO NOT use JFK unless you are near JFK)
 $default_lat = 42.8808;   // KGRR
