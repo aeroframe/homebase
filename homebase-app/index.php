@@ -51,6 +51,8 @@ $user = $_SESSION['user'];
         </section>
 
       </div>
+      
+      <a href="logout.php">Sign out of Homebase</a>
     </div>
   </aside>
 
