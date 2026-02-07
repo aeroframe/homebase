@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -lc 'mkdir -p /run/homebase/dump978 && /usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=0 --json-stdout > /run/homebase/dump978/aircraft.json'
+ExecStart=/bin/bash -lc 'mkdir -p /run/homebase/dump978 && exec /usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=0 --json-stdout > /run/homebase/dump978/aircraft.json'
 # ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
 Restart=always
 RestartSec=10
