@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
+ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --write-json /run/homebase/dump978
+# ExecStart=/usr/local/bin/dump978-fa --sdr driver=rtlsdr,index=1 --json-stdout
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=0
